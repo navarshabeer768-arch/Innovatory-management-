@@ -391,7 +391,7 @@ const SEED={
     {id:'u2',username:'store1',name:'Store Incharge',password:'store123',role:'Store',department:'Store',status:'Active',createdAt:ts()},
     {id:'u3',username:'viewer1',name:'Viewer User',password:'view123',role:'Viewer',department:'Accounts',status:'Active',createdAt:ts()},
   ],
-  settings:{companyName:'GENERAL STORE',subtitle:'Inventory Management System',currencySymbol:'₹',grvPrefix:'GRV',givPrefix:'GIV',fiscalYear:'2024-25'},
+  settings:{companyName:'GENERAL STORE',subtitle:'Inventory Management System',currencySymbol:'QR',grvPrefix:'GRV',givPrefix:'GIV',fiscalYear:'2024-25'},
   suppliers:[
     {id:'sup1',name:'ABC Engineering Pvt. Ltd.',contact:'9876543210',email:'abc@eng.com',status:'Active',createdAt:ts()},
     {id:'sup2',name:'Techno Solutions',contact:'9876543211',email:'techno@sol.com',status:'Active',createdAt:ts()},
@@ -752,7 +752,7 @@ function Dashboard(){
   const items=itemSvc.getAll();
   const low=stockSvc.getLow();
   const sett=settSvc.get();
-  const sym=sett.currencySymbol||'₹';
+  const sym=sett.currencySymbol||'QR';
   const totalVal=stockSvc.totalValue();
   const grvToday=grvSvc.todayCount();
   const givToday=givSvc.todayCount();
@@ -913,7 +913,7 @@ function Categories(){
   const items=itemSvc.getAll();
   const racks=rackSvc.getAll();
   const sett=settSvc.get();
-  const sym=sett.currencySymbol||'₹';
+  const sym=sett.currencySymbol||'QR';
 
   const catStats=CATS.map(c=>{
     const ci=items.filter(i=>i.category===c.id);
@@ -1068,7 +1068,7 @@ function Items(){
   const [catF,setCatF]=useState('');
   const [statusF,setStatusF]=useState('');
   const racks=rackSvc.getAll();
-  const sym=settSvc.get().currencySymbol||'₹';
+  const sym=settSvc.get().currencySymbol||'QR';
   const reloadItems=()=>{setItems(itemSvc.getAll());reload();};
 
   const filtered=useMemo(()=>items.filter(i=>{
@@ -1301,7 +1301,7 @@ function GRVEntry(){
   const {toast,reload}=useCtx();
   const [tab,setTab]=useState('list');
   const sett=settSvc.get();
-  const sym=sett.currencySymbol||'₹';
+  const sym=sett.currencySymbol||'QR';
 
   // GRV List
   const [grvs,setGrvs]=useState(grvSvc.getAll());
@@ -1523,7 +1523,7 @@ function GIVEntry(){
   const {toast,reload}=useCtx();
   const [tab,setTab]=useState('list');
   const sett=settSvc.get();
-  const sym=sett.currencySymbol||'₹';
+  const sym=sett.currencySymbol||'QR';
   const [givs,setGivs]=useState(givSvc.getAll());
   const [q,setQ]=useState('');
   const [viewGiv,setViewGiv]=useState(null);
@@ -1713,7 +1713,7 @@ function StockView(){
   const [q,setQ]=useState('');
   const items=itemSvc.getAll();
   const racks=rackSvc.getAll();
-  const sym=settSvc.get().currencySymbol||'₹';
+  const sym=settSvc.get().currencySymbol||'QR';
 
   const filtered=items.filter(i=>{
     const mq=i.name.toLowerCase().includes(q.toLowerCase())||i.code.toLowerCase().includes(q.toLowerCase());
@@ -1807,7 +1807,7 @@ function Reports(){
   const {toast}=useCtx();
   const [tab,setTab]=useState('grv');
   const sett=settSvc.get();
-  const sym=sett.currencySymbol||'₹';
+  const sym=sett.currencySymbol||'QR';
 
   // GRV Register
   const [grvFrom,setGrvFrom]=useState('');
@@ -2126,8 +2126,8 @@ function Settings(){
           React.createElement('div',{className:'frow'},
             React.createElement('div',{className:'fg'},
               React.createElement('label',{className:'flbl'},'Currency Symbol'),
-              React.createElement('select',{className:'fi',value:s.currencySymbol||'₹',onChange:e=>sf('currencySymbol',e.target.value)},
-                ['₹','$','€','£','AED','SAR'].map(c=>React.createElement('option',{key:c,value:c},c))
+              React.createElement('select',{className:'fi',value:s.currencySymbol||'QR',onChange:e=>sf('currencySymbol',e.target.value)},
+                ['QR','AED','SAR','$','€','£','₹'].map(c=>React.createElement('option',{key:c,value:c},c==='QR'?'QR — Qatar Riyal':c==='AED'?'AED — UAE Dirham':c==='SAR'?'SAR — Saudi Riyal':c))
               )
             ),
             React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Fiscal Year'),React.createElement('input',{className:'fi',value:s.fiscalYear||'',onChange:e=>sf('fiscalYear',e.target.value),placeholder:'2024-25'}))

@@ -387,9 +387,9 @@ const SEED={
   grv:[],
   giv:[],
   users:[
-    {id:'u1',username:'admin',name:'Admin',password:'admin123',role:'Super Admin',department:'Management',status:'Active',createdAt:ts()},
-    {id:'u2',username:'store1',name:'Store Incharge',password:'store123',role:'Store',department:'Store',status:'Active',createdAt:ts()},
-    {id:'u3',username:'viewer1',name:'Viewer User',password:'view123',role:'Viewer',department:'Accounts',status:'Active',createdAt:ts()},
+    {id:'u1',username:'admin',name:'Admin',password:'admin123',role:'Super Admin',department:'Management',status:'Active',canApproveGRV:true,canApproveGIV:true,createdAt:ts()},
+    {id:'u2',username:'store1',name:'Store Incharge',password:'store123',role:'Store',department:'Store',status:'Active',canApproveGRV:false,canApproveGIV:false,createdAt:ts()},
+    {id:'u3',username:'viewer1',name:'Viewer User',password:'view123',role:'Viewer',department:'Accounts',status:'Active',canApproveGRV:false,canApproveGIV:false,createdAt:ts()},
   ],
   settings:{companyName:'GENERAL STORE',subtitle:'Inventory Management System',currencySymbol:'QR',grvPrefix:'GRV',givPrefix:'GIV',fiscalYear:'2024-25'},
   suppliers:[
@@ -454,29 +454,66 @@ const stockSvc={
 
 const grvSvc={
   getAll:()=>(db.g('grv')||[]).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)),
+  getPending:()=>(db.g('grv')||[]).filter(g=>g.status==='Pending Approval'),
   create:(d)=>{
     const a=db.g('grv')||[];
     const n=a.length+1;
     const sett=settSvc.get();
-    const grv={...d,id:uid(),grvNo:`${sett.grvPrefix}-${String(n).padStart(6,'0')}`,status:'Submitted',createdAt:ts()};
+    // Stock does NOT update on submit — only on approval
+    const grv={...d,id:uid(),grvNo:`${sett.grvPrefix}-${String(n).padStart(6,'0')}`,status:'Pending Approval',createdAt:ts()};
     db.s('grv',[...a,grv]);
-    // update stock
-    (d.items||[]).forEach(row=>{stockSvc.adjust(row.itemId,Number(row.qtyReceived));});
     return grv;
+  },
+  approve:(id,approverName)=>{
+    const grvs=db.g('grv')||[];
+    const idx=grvs.findIndex(g=>g.id===id);
+    if(idx<0)return;
+    grvs[idx]={...grvs[idx],status:'Approved',approvedBy:approverName,approvedAt:ts()};
+    db.s('grv',grvs);
+    // NOW update stock after approval
+    (grvs[idx].items||[]).forEach(row=>{stockSvc.adjust(row.itemId,Number(row.qtyReceived));});
+    return grvs[idx];
+  },
+  reject:(id,approverName,reason)=>{
+    const grvs=db.g('grv')||[];
+    const idx=grvs.findIndex(g=>g.id===id);
+    if(idx<0)return;
+    grvs[idx]={...grvs[idx],status:'Rejected',approvedBy:approverName,approvedAt:ts(),rejectReason:reason};
+    db.s('grv',grvs);
+    return grvs[idx];
   },
   todayCount:()=>{const t=today();return (db.g('grv')||[]).filter(g=>g.date===t).length;},
 };
 
 const givSvc={
   getAll:()=>(db.g('giv')||[]).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)),
+  getPending:()=>(db.g('giv')||[]).filter(g=>g.status==='Pending Approval'),
   create:(d)=>{
     const a=db.g('giv')||[];
     const n=a.length+1;
     const sett=settSvc.get();
-    const giv={...d,id:uid(),givNo:`${sett.givPrefix}-${String(n).padStart(6,'0')}`,status:'Submitted',createdAt:ts()};
+    // Stock does NOT update on submit — only on approval
+    const giv={...d,id:uid(),givNo:`${sett.givPrefix}-${String(n).padStart(6,'0')}`,status:'Pending Approval',createdAt:ts()};
     db.s('giv',[...a,giv]);
-    (d.items||[]).forEach(row=>{stockSvc.adjust(row.itemId,-Number(row.qtyIssued));});
     return giv;
+  },
+  approve:(id,approverName)=>{
+    const givs=db.g('giv')||[];
+    const idx=givs.findIndex(g=>g.id===id);
+    if(idx<0)return;
+    givs[idx]={...givs[idx],status:'Approved',approvedBy:approverName,approvedAt:ts()};
+    db.s('giv',givs);
+    // NOW deduct stock after approval
+    (givs[idx].items||[]).forEach(row=>{stockSvc.adjust(row.itemId,-Number(row.qtyIssued));});
+    return givs[idx];
+  },
+  reject:(id,approverName,reason)=>{
+    const givs=db.g('giv')||[];
+    const idx=givs.findIndex(g=>g.id===id);
+    if(idx<0)return;
+    givs[idx]={...givs[idx],status:'Rejected',approvedBy:approverName,approvedAt:ts(),rejectReason:reason};
+    db.s('giv',givs);
+    return givs[idx];
   },
   todayCount:()=>{const t=today();return (db.g('giv')||[]).filter(g=>g.date===t).length;},
 };
@@ -702,6 +739,7 @@ function Sidebar(){
     {type:'section',label:'Transactions'},
     {id:'grv',icon:'grv',label:'GRV (Goods Receipt)'},
     {id:'giv',icon:'giv',label:'GIV (Issue Voucher)'},
+    {id:'approvals',icon:'check',label:'Approvals',dot:(grvSvc.getPending().length+givSvc.getPending().length)||0},
     {type:'section',label:'Inventory'},
     {id:'stockview',icon:'stock',label:'Stock View',dot:low},
     {type:'section',label:'Reports'},
@@ -746,7 +784,7 @@ function Sidebar(){
 //  DASHBOARD
 // ════════════════════════════════════════
 function Dashboard(){
-  const {refresh}=useCtx();
+  const {refresh,user}=useCtx();
   const catChartRef=useRef(null),valChartRef=useRef(null),catInst=useRef(null),valInst=useRef(null);
 
   const items=itemSvc.getAll();
@@ -788,7 +826,7 @@ function Dashboard(){
     React.createElement('div',{className:'ph'},
       React.createElement('div',{className:'ph-l'},
         React.createElement('h1',null,'Dashboard'),
-        React.createElement('p',null,'Welcome, '+useCtx().user?.name+' · '+new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'}))
+        React.createElement('p',null,'Welcome, '+user?.name+' · '+new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'}))
       )
     ),
     // KPIs
@@ -875,7 +913,7 @@ function Dashboard(){
                 React.createElement('td',{style:{padding:'7px 8px',color:'var(--txt2)'}},fmtDate(g.date)),
                 React.createElement('td',{style:{padding:'7px 8px'}},g.supplierName||'-'),
                 React.createElement('td',{style:{padding:'7px 8px',fontWeight:600}},settSvc.get().currencySymbol+' '+fmt(g.totalAmount,0)),
-                React.createElement('td',{style:{padding:'7px 8px'}},React.createElement(Badge,{c:'green'},'Submitted'))
+                React.createElement('td',{style:{padding:'7px 8px'}},React.createElement(Badge,{c:g.status==='Approved'?'green':g.status==='Rejected'?'red':'amber'},g.status))
               ))
             )
           )
@@ -894,7 +932,7 @@ function Dashboard(){
                 React.createElement('td',{style:{padding:'7px 8px',color:'var(--txt2)'}},fmtDate(g.date)),
                 React.createElement('td',{style:{padding:'7px 8px'}},g.issuedTo||'-'),
                 React.createElement('td',{style:{padding:'7px 8px',fontWeight:600}},g.items?.length||0,' items'),
-                React.createElement('td',{style:{padding:'7px 8px'}},React.createElement(Badge,{c:'amber'},'Submitted'))
+                React.createElement('td',{style:{padding:'7px 8px'}},React.createElement(Badge,{c:g.status==='Approved'?'green':g.status==='Rejected'?'red':'amber'},g.status))
               ))
             )
           )
@@ -1346,9 +1384,9 @@ function GRVEntry(){
     const validItems=form.items.filter(r=>r.itemId&&r.qtyReceived);
     if(validItems.length===0){toast('Add at least one item','error');return;}
     const sup=sups.find(s=>s.id===form.supplierId);
-    const grv={...form,supplierName:sup?.name||form.supplierName,items:validItems,totalQty,totalAmount:totalAmt,status:save?'Draft':'Submitted'};
+    const grv={...form,supplierName:sup?.name||form.supplierName,items:validItems,totalQty,totalAmount:totalAmt,status:save?'Draft':'Pending Approval'};
     const created=grvSvc.create(grv);
-    toast(save?'GRV saved as draft':'GRV submitted successfully','success');
+    toast(save?'GRV saved as draft':'GRV submitted — Pending Approval','success');
     setGrvs(grvSvc.getAll());
     reload();
     setTab('list');
@@ -1377,7 +1415,7 @@ function GRVEntry(){
               React.createElement('td',null,React.createElement('span',{style:{fontWeight:500}},g.supplierName||'-')),
               React.createElement('td',null,g.totalQty||0),
               React.createElement('td',null,React.createElement('strong',null,sym+' '+fmt(g.totalAmount,2))),
-              React.createElement('td',null,React.createElement(Badge,{c:g.status==='Submitted'?'green':'amber'},g.status)),
+              React.createElement('td',null,React.createElement(Badge,{c:g.status==='Approved'?'green':g.status==='Rejected'?'red':g.status==='Draft'?'gray':'amber'},g.status)),
               React.createElement('td',null,React.createElement('div',{style:{display:'flex',gap:5}},
                 React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>{setViewGrv(g);setTab('view');}},React.createElement(Ic,{n:'eye',s:12})),
                 React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>window.print()},React.createElement(Ic,{n:'print',s:12}))
@@ -1563,7 +1601,7 @@ function GIVEntry(){
     }
     const giv={...form,items:validItems,totalItems:validItems.length,status:'Submitted'};
     givSvc.create(giv);
-    toast('GIV submitted successfully','success');
+    toast('GIV submitted — Pending Approval','success');
     setGivs(givSvc.getAll());reload();setTab('list');
   };
 
@@ -1589,7 +1627,7 @@ function GIVEntry(){
               React.createElement('td',null,React.createElement('strong',null,g.issuedTo||'-')),
               React.createElement('td',null,g.purpose||'-'),
               React.createElement('td',null,React.createElement(Badge,{c:'blue'},g.totalItems||g.items?.length||0+' items')),
-              React.createElement('td',null,React.createElement(Badge,{c:'amber'},g.status)),
+              React.createElement('td',null,React.createElement(Badge,{c:g.status==='Approved'?'green':g.status==='Rejected'?'red':g.status==='Draft'?'gray':'amber'},g.status)),
               React.createElement('td',null,React.createElement('div',{style:{display:'flex',gap:5}},
                 React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>{setViewGiv(g);setTab('view');}},React.createElement(Ic,{n:'eye',s:12})),
                 React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>window.print()},React.createElement(Ic,{n:'print',s:12}))
@@ -2024,74 +2062,381 @@ function Users(){
   const reload=()=>setUsers(userSvc.getAll());
 
   const UForm=({initial,onSave,onClose})=>{
-    const [f,setF]=useState(initial||{name:'',username:'',password:'',role:'Store',department:'',status:'Active'});
+    const [f,setF]=useState(initial||{name:'',username:'',password:'',role:'Store',department:'',status:'Active',canApproveGRV:false,canApproveGIV:false});
     const s=(k,v)=>setF(p=>({...p,[k]:v}));
     const [e,setE]=useState({});
+    const isSA=f.role==='Super Admin';
     const save=()=>{
-      const err={};if(!f.name)err.name='Required';if(!f.username)err.username='Required';
+      const err={};
+      if(!f.name)err.name='Required';
+      if(!f.username)err.username='Required';
       if(!initial&&!f.password)err.password='Required';
-      if(Object.keys(err).length){setE(err);return;}onSave(f);
+      if(Object.keys(err).length){setE(err);return;}
+      onSave({...f,canApproveGRV:isSA?true:f.canApproveGRV,canApproveGIV:isSA?true:f.canApproveGIV});
     };
     return React.createElement(Modal,{title:initial?'Edit User':'Add User',onClose,size:'sm'},
       React.createElement('div',{className:'frow'},
-        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Full Name *'),React.createElement('input',{className:'fi',value:f.name,onChange:e=>s('name',e.target.value)}),e.name&&React.createElement('div',{className:'fe'},e.name)),
-        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Username *'),React.createElement('input',{className:'fi',value:f.username,onChange:e=>s('username',e.target.value)}),e.username&&React.createElement('div',{className:'fe'},e.username))
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Full Name *'),React.createElement('input',{className:'fi',value:f.name,onChange:ev=>s('name',ev.target.value)}),e.name&&React.createElement('div',{className:'fe'},e.name)),
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Username *'),React.createElement('input',{className:'fi',value:f.username,onChange:ev=>s('username',ev.target.value)}),e.username&&React.createElement('div',{className:'fe'},e.username))
       ),
       React.createElement('div',{className:'frow'},
-        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},initial?'New Password':'Password *'),React.createElement('input',{className:'fi',type:'password',value:f.password||'',onChange:e=>s('password',e.target.value)}),e.password&&React.createElement('div',{className:'fe'},e.password)),
+        React.createElement('div',{className:'fg'},
+          React.createElement('label',{className:'flbl'},initial?'New Password (blank=keep)':'Password *'),
+          React.createElement('input',{className:'fi',type:'password',value:f.password||'',onChange:ev=>s('password',ev.target.value)}),
+          e.password&&React.createElement('div',{className:'fe'},e.password)
+        ),
         React.createElement('div',{className:'fg'},
           React.createElement('label',{className:'flbl'},'Role'),
-          React.createElement('select',{className:'fi',value:f.role,onChange:e=>s('role',e.target.value)},
-            ['Super Admin','Admin','Store','Viewer','Manager'].map(r=>React.createElement('option',{key:r,value:r},r))
+          React.createElement('select',{className:'fi',value:f.role,onChange:ev=>{
+            const r=ev.target.value;
+            s('role',r);
+            if(r==='Super Admin'){s('canApproveGRV',true);s('canApproveGIV',true);}
+          }},
+            ['Super Admin','Admin','Manager','Store','Viewer'].map(r=>React.createElement('option',{key:r,value:r},r))
           )
         )
       ),
       React.createElement('div',{className:'frow'},
-        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Department'),React.createElement('input',{className:'fi',value:f.department||'',onChange:e=>s('department',e.target.value)})),
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Department'),React.createElement('input',{className:'fi',value:f.department||'',onChange:ev=>s('department',ev.target.value)})),
         React.createElement('div',{className:'fg'},
           React.createElement('label',{className:'flbl'},'Status'),
-          React.createElement('select',{className:'fi',value:f.status,onChange:e=>s('status',e.target.value)},
+          React.createElement('select',{className:'fi',value:f.status,onChange:ev=>s('status',ev.target.value)},
             ['Active','Inactive'].map(v=>React.createElement('option',{key:v,value:v},v))
           )
         )
       ),
+      // ── APPROVAL PERMISSIONS BOX ──
+      React.createElement('div',{style:{background:isSA?'var(--off2)':'var(--blue-light)',border:`1px solid ${isSA?'var(--border2)':'var(--blue-mid)'}`,borderRadius:'var(--r)',padding:'14px 16px',marginTop:6}},
+        React.createElement('div',{style:{fontWeight:700,fontSize:11,color:isSA?'var(--txt3)':'var(--blue)',marginBottom:10,textTransform:'uppercase',letterSpacing:'.6px'}},
+          '🔐 Approval Permissions',isSA&&React.createElement('span',{style:{marginLeft:8,fontWeight:400,textTransform:'none',fontSize:11}},'— Auto-enabled for Super Admin')
+        ),
+        React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:10}},
+          // GRV permission
+          React.createElement('label',{style:{display:'flex',alignItems:'flex-start',gap:10,cursor:isSA?'default':'pointer'}},
+            React.createElement('input',{type:'checkbox',checked:isSA||!!f.canApproveGRV,disabled:isSA,onChange:ev=>s('canApproveGRV',ev.target.checked),style:{width:16,height:16,marginTop:2,accentColor:'var(--green)',flexShrink:0}}),
+            React.createElement('div',null,
+              React.createElement('div',{style:{fontSize:13,fontWeight:600,color:'var(--txt)'}},
+                '📥 GRV Approval',
+                (isSA||f.canApproveGRV)&&React.createElement('span',{className:'badge b-green',style:{marginLeft:8,fontSize:10}},'Enabled')
+              ),
+              React.createElement('div',{style:{fontSize:11,color:'var(--txt3)',marginTop:2}},'Can approve or reject Goods Receipt Vouchers')
+            )
+          ),
+          // GIV permission
+          React.createElement('label',{style:{display:'flex',alignItems:'flex-start',gap:10,cursor:isSA?'default':'pointer'}},
+            React.createElement('input',{type:'checkbox',checked:isSA||!!f.canApproveGIV,disabled:isSA,onChange:ev=>s('canApproveGIV',ev.target.checked),style:{width:16,height:16,marginTop:2,accentColor:'var(--amber)',flexShrink:0}}),
+            React.createElement('div',null,
+              React.createElement('div',{style:{fontSize:13,fontWeight:600,color:'var(--txt)'}},
+                '📤 GIV Approval',
+                (isSA||f.canApproveGIV)&&React.createElement('span',{className:'badge b-amber',style:{marginLeft:8,fontSize:10}},'Enabled')
+              ),
+              React.createElement('div',{style:{fontSize:11,color:'var(--txt3)',marginTop:2}},'Can approve or reject Goods Issue Vouchers')
+            )
+          )
+        )
+      ),
       null,
-      React.createElement('div',{style:{display:'flex',gap:8,justifyContent:'flex-end',marginTop:4}},
+      React.createElement('div',{style:{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}},
         React.createElement('button',{className:'btn btn-outline',onClick:onClose},'Cancel'),
         React.createElement('button',{className:'btn btn-primary',onClick:save},initial?'Update User':'Add User')
       )
     );
   };
 
-  const roleColor={Super_Admin:'red',Admin:'amber',Store:'blue',Viewer:'gray',Manager:'purple'};
+  const rColor={'Super Admin':'red','Admin':'amber','Manager':'purple','Store':'blue','Viewer':'gray'};
 
   return React.createElement('div',null,
     React.createElement('div',{className:'ph'},
-      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'User Management'),React.createElement('p',null,`${users.length} users registered`)),
-      me?.role==='Super Admin'&&React.createElement('div',{className:'ph-r'},React.createElement('button',{className:'btn btn-primary',onClick:()=>setModal(React.createElement(UForm,{onClose:()=>setModal(null),onSave:d=>{userSvc.create(d);toast('User added','success');reload();setModal(null);}}))},React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' + Add User'))
+      React.createElement('div',{className:'ph-l'},
+        React.createElement('h1',null,'User Management'),
+        React.createElement('p',null,'Manage roles and GRV / GIV approval permissions')
+      ),
+      me?.role==='Super Admin'&&React.createElement('div',{className:'ph-r'},
+        React.createElement('button',{className:'btn btn-primary',onClick:()=>setModal(React.createElement(UForm,{onClose:()=>setModal(null),onSave:d=>{userSvc.create(d);toast('User added','success');reload();setModal(null);}}))},
+          React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' + Add User'
+        )
+      )
+    ),
+    React.createElement('div',{className:'alert alert-blue',style:{marginBottom:14}},
+      React.createElement(Ic,{n:'info',s:13}),
+      React.createElement('span',null,
+        React.createElement('strong',null,'Approval Flow: '),
+        'Store submits GRV/GIV → status becomes ',
+        React.createElement('strong',null,'"Pending Approval"'),
+        ' → Users with approval permission can Approve ✓ or Reject ✗ from the ',
+        React.createElement('strong',null,'Approvals'),
+        ' page.'
+      )
     ),
     React.createElement('div',{className:'tw'},
       React.createElement('table',null,
-        React.createElement('thead',null,React.createElement('tr',null,['User Name','Full Name','Role','Department','Email','Status','Action'].map(h=>React.createElement('th',{key:h},h)))),
+        React.createElement('thead',null,React.createElement('tr',null,
+          ['User','Username','Role','Department','GRV Approval','GIV Approval','Status','Action'].map(h=>React.createElement('th',{key:h},h))
+        )),
         React.createElement('tbody',null,
-          users.map(u=>React.createElement('tr',{key:u.id},
-            React.createElement('td',null,React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8}},
-              React.createElement('div',{style:{width:28,height:28,borderRadius:7,background:'var(--blue)',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,color:'#fff',fontSize:11,flexShrink:0}},u.name[0]),
-              React.createElement('span',{className:'mono',style:{fontWeight:600}},u.username),
-              u.id===me?.id&&React.createElement('span',{style:{fontSize:9,background:'var(--blue-mid)',color:'var(--blue)',padding:'1px 6px',borderRadius:4,fontWeight:700}},`YOU`)
-            )),
-            React.createElement('td',null,u.name),
-            React.createElement('td',null,React.createElement(Badge,{c:{Super_Admin:'red','Super Admin':'red',Admin:'amber',Store:'blue',Viewer:'gray',Manager:'purple'}[u.role.replace(' ','_')]||'gray'},u.role)),
-            React.createElement('td',null,u.department||'-'),
-            React.createElement('td',null,u.email||'-'),
-            React.createElement('td',null,React.createElement('span',{className:`sdot ${u.status==='Active'?'active':'inactive'}`},u.status)),
-            React.createElement('td',null,
-              me?.role==='Super Admin'&&u.id!==me?.id&&React.createElement('div',{style:{display:'flex',gap:5}},
-                React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>setModal(React.createElement(UForm,{initial:u,onClose:()=>setModal(null),onSave:d=>{userSvc.update(u.id,{...d,...(!d.password&&{password:u.password})});toast('Updated','success');reload();setModal(null);}}))},React.createElement(Ic,{n:'edit',s:13})),
-                React.createElement('button',{className:'btn btn-danger btn-sm btn-icon',onClick:()=>setModal(React.createElement(Confirm,{title:'Delete User',text:`Delete "${u.name}"?`,onCancel:()=>setModal(null),onOk:()=>{userSvc.delete(u.id);toast('Deleted','success');reload();setModal(null);}}))},React.createElement(Ic,{n:'trash',s:13}))
+          users.map(u=>{
+            const isSA=u.role==='Super Admin';
+            return React.createElement('tr',{key:u.id},
+              React.createElement('td',null,
+                React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8}},
+                  React.createElement('div',{style:{width:30,height:30,borderRadius:8,background:'var(--blue)',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,color:'#fff',fontSize:12,flexShrink:0}},u.name[0]),
+                  React.createElement('div',null,
+                    React.createElement('div',{style:{fontWeight:600,fontSize:13}},u.name),
+                    u.id===me?.id&&React.createElement('span',{style:{fontSize:9,background:'var(--blue-mid)',color:'var(--blue)',padding:'1px 6px',borderRadius:4,fontWeight:700}},'YOU')
+                  )
+                )
+              ),
+              React.createElement('td',null,React.createElement('span',{className:'mono',style:{fontWeight:600}},u.username)),
+              React.createElement('td',null,React.createElement(Badge,{c:rColor[u.role]||'gray'},u.role)),
+              React.createElement('td',null,u.department||'-'),
+              // GRV approval
+              React.createElement('td',null,
+                isSA||u.canApproveGRV
+                  ? React.createElement('span',{style:{display:'inline-flex',alignItems:'center',gap:5,background:'var(--green-light)',color:'var(--green)',borderRadius:20,padding:'3px 11px',fontSize:11,fontWeight:700}},
+                    React.createElement(Ic,{n:'check',s:11,c:'var(--green)'}),' Can Approve'
+                  )
+                  : React.createElement('span',{style:{display:'inline-flex',alignItems:'center',gap:5,background:'var(--off2)',color:'var(--txt3)',borderRadius:20,padding:'3px 11px',fontSize:11,fontWeight:600}},'No Access')
+              ),
+              // GIV approval
+              React.createElement('td',null,
+                isSA||u.canApproveGIV
+                  ? React.createElement('span',{style:{display:'inline-flex',alignItems:'center',gap:5,background:'var(--amber-light)',color:'var(--amber)',borderRadius:20,padding:'3px 11px',fontSize:11,fontWeight:700}},
+                    React.createElement(Ic,{n:'check',s:11,c:'var(--amber)'}),' Can Approve'
+                  )
+                  : React.createElement('span',{style:{display:'inline-flex',alignItems:'center',gap:5,background:'var(--off2)',color:'var(--txt3)',borderRadius:20,padding:'3px 11px',fontSize:11,fontWeight:600}},'No Access')
+              ),
+              React.createElement('td',null,React.createElement('span',{className:`sdot ${u.status==='Active'?'active':'inactive'}`},u.status)),
+              React.createElement('td',null,
+                me?.role==='Super Admin'&&u.id!==me?.id&&React.createElement('div',{style:{display:'flex',gap:5}},
+                  React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',title:'Edit',
+                    onClick:()=>setModal(React.createElement(UForm,{initial:u,onClose:()=>setModal(null),onSave:d=>{userSvc.update(u.id,{...d,...(!d.password&&{password:u.password})});toast('Updated','success');reload();setModal(null);}}))},
+                    React.createElement(Ic,{n:'edit',s:13})
+                  ),
+                  React.createElement('button',{className:'btn btn-danger btn-sm btn-icon',title:'Delete',
+                    onClick:()=>setModal(React.createElement(Confirm,{title:'Delete User',text:`Delete "${u.name}"?`,onCancel:()=>setModal(null),onOk:()=>{userSvc.delete(u.id);toast('Deleted','success');reload();setModal(null);}}))},
+                    React.createElement(Ic,{n:'trash',s:13})
+                  )
+                )
               )
+            );
+          })
+        )
+      )
+    )
+  );
+}
+
+// ════════════════════════════════════════
+//  APPROVALS PAGE
+// ════════════════════════════════════════
+function Approvals(){
+  const {toast,setModal,user:me,reload}=useCtx();
+  const [tab,setTab]=useState('grv');
+  const [rejectReason,setRejectReason]=useState('');
+  const [refresh,setRefresh]=useState(0);
+  const reloadPage=()=>{setRefresh(r=>r+1);reload();};
+
+  const canGRV=me?.role==='Super Admin'||me?.canApproveGRV;
+  const canGIV=me?.role==='Super Admin'||me?.canApproveGIV;
+
+  const allGRV=grvSvc.getAll();
+  const allGIV=givSvc.getAll();
+  const pendingGRV=allGRV.filter(g=>g.status==='Pending Approval');
+  const pendingGIV=allGIV.filter(g=>g.status==='Pending Approval');
+
+  const statusColor=s=>({
+    'Pending Approval':'amber','Approved':'green','Rejected':'red','Draft':'gray'
+  }[s]||'gray');
+
+  const statusIcon=s=>({'Pending Approval':'⏳','Approved':'✅','Rejected':'❌','Draft':'📝'}[s]||'');
+
+  // Reject modal
+  const openReject=(type,id)=>{
+    let reason='';
+    setModal(React.createElement(Modal,{title:'Reject — Enter Reason',onClose:()=>setModal(null),size:'sm'},
+      React.createElement('div',{className:'fg'},
+        React.createElement('label',{className:'flbl'},'Reason for Rejection *'),
+        React.createElement('textarea',{className:'fi',rows:3,placeholder:'e.g. Incorrect quantity, Wrong item, Missing invoice...',onChange:ev=>{reason=ev.target.value;}})
+      ),
+      null,
+      React.createElement('div',{style:{display:'flex',gap:8,justifyContent:'flex-end'}},
+        React.createElement('button',{className:'btn btn-outline',onClick:()=>setModal(null)},'Cancel'),
+        React.createElement('button',{className:'btn btn-danger',onClick:()=>{
+          if(!reason.trim()){toast('Enter a reason','error');return;}
+          if(type==='grv')grvSvc.reject(id,me.name,reason);
+          else givSvc.reject(id,me.name,reason);
+          toast('Rejected','success');
+          setModal(null);reloadPage();
+        }},'Confirm Reject')
+      )
+    ));
+  };
+
+  const doApprove=(type,id)=>{
+    if(type==='grv')grvSvc.approve(id,me.name);
+    else givSvc.approve(id,me.name);
+    toast(`${type.toUpperCase()} Approved — Stock updated!`,'success');
+    reloadPage();
+  };
+
+  const VoucherRow=(v,type)=>{
+    const items=itemSvc.getAll();
+    const isPending=v.status==='Pending Approval';
+    const canAct=(type==='grv'?canGRV:canGIV)&&isPending;
+    return React.createElement('tr',{key:v.id,style:{background:isPending?'var(--amber-light)':''}},
+      React.createElement('td',null,
+        React.createElement('span',{style:{fontWeight:700,color:type==='grv'?'var(--blue)':'var(--amber)'}},type==='grv'?v.grvNo:v.givNo)
+      ),
+      React.createElement('td',null,fmtDate(v.date)),
+      React.createElement('td',null,
+        type==='grv'
+          ? React.createElement('span',{style:{fontWeight:500}},v.supplierName||'-')
+          : React.createElement('span',{style:{fontWeight:500}},v.issuedTo||'-')
+      ),
+      React.createElement('td',null,
+        type==='grv'
+          ? React.createElement('span',null,v.items?.length||0,' items · ',settSvc.get().currencySymbol,' ',fmt(v.totalAmount||0,2))
+          : React.createElement('span',null,v.items?.length||0,' items')
+      ),
+      React.createElement('td',null,
+        React.createElement('span',{style:{fontWeight:600,fontSize:12}},
+          React.createElement('span',{style:{marginRight:4}},statusIcon(v.status)),
+          React.createElement(Badge,{c:statusColor(v.status)},v.status)
+        )
+      ),
+      React.createElement('td',null,
+        v.approvedBy
+          ? React.createElement('div',null,
+            React.createElement('div',{style:{fontSize:12,fontWeight:600}},v.approvedBy),
+            React.createElement('div',{style:{fontSize:10,color:'var(--txt3)'}},fmtDate(v.approvedAt))
+          )
+          : React.createElement('span',{style:{color:'var(--txt3)',fontSize:12}},'—')
+      ),
+      React.createElement('td',null,
+        v.rejectReason&&React.createElement('div',{style:{fontSize:11,color:'var(--red)',maxWidth:160}},v.rejectReason)
+      ),
+      React.createElement('td',null,
+        canAct
+          ? React.createElement('div',{style:{display:'flex',gap:6}},
+            React.createElement('button',{className:'btn btn-success btn-sm',style:{minWidth:80},onClick:()=>doApprove(type,v.id)},
+              React.createElement(Ic,{n:'check',s:12,c:'#fff'}),' Approve'
+            ),
+            React.createElement('button',{className:'btn btn-danger btn-sm',style:{minWidth:70},onClick:()=>openReject(type,v.id)},
+              React.createElement(Ic,{n:'x',s:12}),' Reject'
             )
-          ))
+          )
+          : isPending&&!canAct
+            ? React.createElement('span',{style:{fontSize:11,color:'var(--txt3)'}},`No permission`)
+            : React.createElement('span',{style:{fontSize:11,color:'var(--txt3)'}},'—')
+      )
+    );
+  };
+
+  if(!canGRV&&!canGIV){
+    return React.createElement('div',null,
+      React.createElement('div',{className:'ph'},React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Approvals'))),
+      React.createElement('div',{style:{background:'#fff',border:'1px solid var(--border)',borderRadius:'var(--rl)',padding:'60px 20px',textAlign:'center',boxShadow:'var(--shadow)'}},
+        React.createElement('div',{style:{fontSize:40,marginBottom:14}},'🔒'),
+        React.createElement('div',{style:{fontSize:16,fontWeight:700,marginBottom:8}},'No Approval Permission'),
+        React.createElement('div',{style:{fontSize:13,color:'var(--txt2)'}},`You do not have GRV or GIV approval permission. Contact Super Admin to assign approval rights.`)
+      )
+    );
+  }
+
+  return React.createElement('div',null,
+    React.createElement('div',{className:'ph'},
+      React.createElement('div',{className:'ph-l'},
+        React.createElement('h1',null,'Approvals'),
+        React.createElement('p',null,'Review and approve pending GRV / GIV vouchers')
+      )
+    ),
+    // Summary cards
+    React.createElement('div',{className:'grid g4',style:{marginBottom:16}},
+      [
+        {l:'Pending GRV',v:pendingGRV.length,c:'var(--amber)',bg:'var(--amber-light)',ico:'⏳'},
+        {l:'Pending GIV',v:pendingGIV.length,c:'var(--amber)',bg:'var(--amber-light)',ico:'⏳'},
+        {l:'GRV Approved Today',v:allGRV.filter(g=>g.status==='Approved'&&g.approvedAt?.startsWith(today())).length,c:'var(--green)',bg:'var(--green-light)',ico:'✅'},
+        {l:'GIV Approved Today',v:allGIV.filter(g=>g.status==='Approved'&&g.approvedAt?.startsWith(today())).length,c:'var(--green)',bg:'var(--green-light)',ico:'✅'},
+      ].map(k=>React.createElement('div',{key:k.l,className:'card',style:{display:'flex',alignItems:'center',gap:12,padding:'14px 16px',borderLeft:`3px solid ${k.c}`}},
+        React.createElement('div',{style:{fontSize:24}},k.ico),
+        React.createElement('div',null,
+          React.createElement('div',{style:{fontSize:22,fontWeight:800,color:k.c}},k.v),
+          React.createElement('div',{style:{fontSize:11,color:'var(--txt2)'}},k.l)
+        )
+      ))
+    ),
+    // Tabs
+    React.createElement('div',{className:'tabs'},
+      canGRV&&React.createElement('div',{className:`tab${tab==='grv'?' on':''}`,onClick:()=>setTab('grv')},
+        '📥 GRV Approvals ',pendingGRV.length>0&&React.createElement('span',{style:{background:'var(--red)',color:'#fff',borderRadius:20,padding:'1px 7px',fontSize:10,fontWeight:700,marginLeft:4}},pendingGRV.length)
+      ),
+      canGIV&&React.createElement('div',{className:`tab${tab==='giv'?' on':''}`,onClick:()=>setTab('giv')},
+        '📤 GIV Approvals ',pendingGIV.length>0&&React.createElement('span',{style:{background:'var(--red)',color:'#fff',borderRadius:20,padding:'1px 7px',fontSize:10,fontWeight:700,marginLeft:4}},pendingGIV.length)
+      ),
+      React.createElement('div',{className:`tab${tab==='history'?' on':''}`,onClick:()=>setTab('history')},'📋 All History')
+    ),
+    // GRV Approvals
+    tab==='grv'&&canGRV&&React.createElement('div',{className:'tw'},
+      React.createElement('table',null,
+        React.createElement('thead',null,React.createElement('tr',null,
+          ['GRV No.','Date','Supplier','Details','Status','Approved By','Reject Reason','Action'].map(h=>React.createElement('th',{key:h},h))
+        )),
+        React.createElement('tbody',null,
+          allGRV.length===0
+            ? React.createElement('tr',null,React.createElement('td',{colSpan:8},React.createElement('div',{className:'te'},'No GRV records')))
+            : allGRV.map(v=>VoucherRow(v,'grv'))
+        )
+      )
+    ),
+    // GIV Approvals
+    tab==='giv'&&canGIV&&React.createElement('div',{className:'tw'},
+      React.createElement('table',null,
+        React.createElement('thead',null,React.createElement('tr',null,
+          ['GIV No.','Date','Issued To','Details','Status','Approved By','Reject Reason','Action'].map(h=>React.createElement('th',{key:h},h))
+        )),
+        React.createElement('tbody',null,
+          allGIV.length===0
+            ? React.createElement('tr',null,React.createElement('td',{colSpan:8},React.createElement('div',{className:'te'},'No GIV records')))
+            : allGIV.map(v=>VoucherRow(v,'giv'))
+        )
+      )
+    ),
+    // History — all
+    tab==='history'&&React.createElement('div',null,
+      React.createElement('div',{style:{fontWeight:700,fontSize:13,marginBottom:10,color:'var(--navy)'}},'All GRV History'),
+      React.createElement('div',{className:'tw',style:{marginBottom:16}},
+        React.createElement('table',null,
+          React.createElement('thead',null,React.createElement('tr',null,
+            ['GRV No.','Date','Supplier','Amount','Status','Approved By'].map(h=>React.createElement('th',{key:h},h))
+          )),
+          React.createElement('tbody',null,
+            allGRV.map(v=>React.createElement('tr',{key:v.id},
+              React.createElement('td',null,React.createElement('span',{style:{color:'var(--blue)',fontWeight:700}},v.grvNo)),
+              React.createElement('td',null,fmtDate(v.date)),
+              React.createElement('td',null,v.supplierName||'-'),
+              React.createElement('td',null,settSvc.get().currencySymbol+' '+fmt(v.totalAmount||0,2)),
+              React.createElement('td',null,React.createElement('span',{style:{marginRight:4}},statusIcon(v.status)),React.createElement(Badge,{c:statusColor(v.status)},v.status)),
+              React.createElement('td',null,v.approvedBy||'-')
+            ))
+          )
+        )
+      ),
+      React.createElement('div',{style:{fontWeight:700,fontSize:13,marginBottom:10,color:'var(--navy)'}},'All GIV History'),
+      React.createElement('div',{className:'tw'},
+        React.createElement('table',null,
+          React.createElement('thead',null,React.createElement('tr',null,
+            ['GIV No.','Date','Issued To','Items','Status','Approved By'].map(h=>React.createElement('th',{key:h},h))
+          )),
+          React.createElement('tbody',null,
+            allGIV.map(v=>React.createElement('tr',{key:v.id},
+              React.createElement('td',null,React.createElement('span',{style:{color:'var(--amber)',fontWeight:700}},v.givNo)),
+              React.createElement('td',null,fmtDate(v.date)),
+              React.createElement('td',null,v.issuedTo||'-'),
+              React.createElement('td',null,(v.items?.length||0)+' items'),
+              React.createElement('td',null,React.createElement('span',{style:{marginRight:4}},statusIcon(v.status)),React.createElement(Badge,{c:statusColor(v.status)},v.status)),
+              React.createElement('td',null,v.approvedBy||'-')
+            ))
+          )
         )
       )
     )
@@ -2157,7 +2502,7 @@ function Settings(){
 //  MAIN APP
 // ════════════════════════════════════════
 function App(){
-  const {user,page,toasts,modal,sideOpen,setSideOpen}=useCtx();
+  const {user,page,nav,toasts,modal,sideOpen,setSideOpen}=useCtx();
   if(!user)return React.createElement(Auth);
 
   const pages={
@@ -2168,6 +2513,7 @@ function App(){
     suppliers:React.createElement(Suppliers),
     grv:React.createElement(GRVEntry),
     giv:React.createElement(GIVEntry),
+    approvals:React.createElement(Approvals),
     stockview:React.createElement(StockView),
     reports:React.createElement(Reports),
     users:React.createElement(Users),
@@ -2177,10 +2523,11 @@ function App(){
   const breadcrumbs={
     dashboard:['Dashboard'],categories:['Master','Category Master'],items:['Master','Item Master'],
     racks:['Master','Rack Management'],suppliers:['Master','Supplier Master'],
-    grv:['Transaction','GRV Entry'],giv:['Transaction','GIV Entry'],
+    grv:['Transaction','GRV Entry'],giv:['Transaction','GIV Entry'],approvals:['Transaction','Approvals'],
     stockview:['Inventory','Stock View'],reports:['Reports'],users:['Settings','User Management'],settings:['Settings'],
   };
   const bc=breadcrumbs[page]||[page];
+  const pendingCount=grvSvc.getPending().length+givSvc.getPending().length;
   const sett=settSvc.get();
   const low=stockSvc.getLow().length;
 
@@ -2197,8 +2544,9 @@ function App(){
           ))
         ),
         React.createElement('div',{className:'topbar-right'},
-          low>0&&React.createElement('div',{style:{background:'var(--red-light)',border:'1px solid var(--red-mid)',color:'var(--red)',borderRadius:6,padding:'4px 10px',fontSize:11,fontWeight:700,cursor:'pointer'},onClick:()=>useCtx().nav('stockview')},`⚠ ${low} Low Stock`),
-          React.createElement('div',{className:'notif-btn'},React.createElement(Ic,{n:'bell',s:15,c:'var(--txt2)'}),low>0&&React.createElement('div',{className:'notif-dot'})),
+          low>0&&React.createElement('div',{style:{background:'var(--red-light)',border:'1px solid var(--red-mid)',color:'var(--red)',borderRadius:6,padding:'4px 10px',fontSize:11,fontWeight:700,cursor:'pointer'},onClick:()=>nav('stockview')},`⚠ ${low} Low Stock`),
+          pendingCount>0&&React.createElement('div',{style:{background:'var(--amber-light)',border:'1px solid var(--amber-mid)',color:'var(--amber)',borderRadius:6,padding:'4px 10px',fontSize:11,fontWeight:700,cursor:'pointer'},onClick:()=>nav('approvals')},`⏳ ${pendingCount} Pending Approval`),
+          React.createElement('div',{className:'notif-btn'},React.createElement(Ic,{n:'bell',s:15,c:'var(--txt2)'}),(low>0||pendingCount>0)&&React.createElement('div',{className:'notif-dot'})),
           React.createElement('div',{className:'user-chip'},
             React.createElement('div',{className:'user-chip-av'},user?.name?.[0]||'U'),
             React.createElement('div',null,

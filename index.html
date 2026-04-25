@@ -412,7 +412,7 @@ const SEED={
     {id:'u4',username:'store2',name:'WH2 Store Incharge',password:'store456',role:'Store',whId:'wh2',department:'Store',status:'Active',canApproveGRV:false,canApproveGIV:false,createdAt:ts()},
     {id:'u5',username:'mgr2',name:'WH2 Manager',password:'mgr456',role:'Manager',whId:'wh2',department:'Management',status:'Active',canApproveGRV:true,canApproveGIV:true,createdAt:ts()},
   ],
-  settings:{companyName:'GENERAL STORE',subtitle:'Multi-Warehouse IMS',currencySymbol:'QR',grvPrefix:'GRV',givPrefix:'GIV',trnPrefix:'TRN',fiscalYear:'2024-25'},
+  settings:{companyName:'GENERAL STORE',subtitle:'Multi-Warehouse IMS',currencySymbol:'QR',grvPrefix:'GRN',givPrefix:'GIN',trnPrefix:'TRN',fiscalYear:'2024-25'},
   suppliers:[
     {id:'sup1',name:'ABC Engineering Pvt. Ltd.',contact:'9876543210',email:'abc@eng.com',status:'Active',createdAt:ts()},
     {id:'sup2',name:'Techno Solutions',contact:'9876543211',email:'techno@sol.com',status:'Active',createdAt:ts()},
@@ -541,9 +541,24 @@ const trnSvc={
     const a=db.g('transfers')||[];const idx=a.findIndex(t=>t.id===id);if(idx<0)return;
     a[idx]={...a[idx],status:'Approved',approvedBy:approverName,approvedAt:ts()};
     db.s('transfers',a);
+    const toWhId=a[idx].toWhId;
+    const fromWhId=a[idx].fromWhId;
     (a[idx].items||[]).forEach(row=>{
-      stockSvc.adjust(row.itemId,a[idx].fromWhId,-Number(row.qty));
-      stockSvc.adjust(row.itemId,a[idx].toWhId,Number(row.qty));
+      // Deduct from source warehouse
+      stockSvc.adjust(row.itemId,fromWhId,-Number(row.qty));
+      // Find matching item in destination warehouse (same code or same original item)
+      const srcItem=itemSvc.getById(row.itemId);
+      if(!srcItem)return;
+      const allItems=db.g('items')||[];
+      // Look for same item code in destination warehouse
+      let destItem=allItems.find(i=>i.whId===toWhId&&(i.code===srcItem.code||i.name===srcItem.name));
+      if(!destItem){
+        // Create item in destination warehouse
+        destItem={...srcItem,id:uid(),whId:toWhId,createdAt:ts(),updatedAt:ts()};
+        db.s('items',[...allItems,destItem]);
+      }
+      // Add stock to destination item
+      stockSvc.adjust(destItem.id,toWhId,Number(row.qty));
     });
     return a[idx];
   },
@@ -789,8 +804,8 @@ function Sidebar(){
     {id:'racks',icon:'rack',label:'Rack Management'},
     {id:'suppliers',icon:'supplier',label:'Supplier Master'},
     {type:'section',label:'Transactions'},
-    {id:'grv',icon:'grv',label:'GRV (Goods Receipt)'},
-    {id:'giv',icon:'giv',label:'GIV (Issue Voucher)'},
+    {id:'grn',icon:'grv',label:'GRN (Goods Receipt)'},
+    {id:'gin',icon:'giv',label:'GIN (Issue Note)'},
     {id:'transfer',icon:'transfer',label:'Stock Transfer'},
     canApprove&&{id:'approvals',icon:'check',label:'Approvals',dot:pendingTotal},
     {type:'section',label:'Inventory'},
@@ -953,8 +968,8 @@ function Dashboard(){
     {l:'Pending',        v:String(pendingApprovals),    s:'Click for approvals',    ico:'⏳',c:pendingApprovals?'var(--amber)':'var(--green)',fn:()=>nav('approvals')},
   ];
   const todayRow=[
-    {l:'GRV Today',      v:String(grvToday),  ico:'📥',c:'var(--blue)',  fn:()=>nav('grv')},
-    {l:'GIV Today',      v:String(givToday),  ico:'📤',c:'var(--amber)', fn:()=>nav('giv')},
+    {l:'GRN Today',      v:String(grvToday),  ico:'📥',c:'var(--blue)',  fn:()=>nav('grv')},
+    {l:'GIN Today',      v:String(givToday),  ico:'📤',c:'var(--amber)', fn:()=>nav('giv')},
     {l:'Warehouses',     v:String(whs.length),ico:'🏭', c:'#0d9488',     fn:()=>isSA?nav('warehouses'):null},
     {l:'Transfers',      v:String(trnSvc.getAll(whId).length),ico:'🔄',c:'#7c3aed',fn:()=>nav('transfer')},
   ];
@@ -1085,7 +1100,7 @@ function Dashboard(){
       React.createElement('div',{className:'tw',style:{border:'none',boxShadow:'none'}},
         React.createElement('table',null,
           React.createElement('thead',null,React.createElement('tr',null,
-            ['Warehouse','Code','Items','Low Stock','Stock Value','GRV Today','GIV Today','Status']
+            ['Warehouse','Code','Items','Low Stock','Stock Value','GRN Today','GIN Today','Status']
               .map(h=>React.createElement('th',{key:h},h))
           )),
           React.createElement('tbody',null,
@@ -1304,7 +1319,7 @@ function DrillDown({drilldown,onBack}){
           {l:'Total Items',v:String(items.length),c:'var(--blue)',ico:'📦'},
           {l:'Stock Value',v:money(val),c:'var(--green)',ico:'💰'},
           {l:'Low Stock',v:String(lowItems.length),c:lowItems.length?'var(--red)':'var(--green)',ico:'⚠️'},
-          {l:'GRV Today',v:String(grvSvc.todayCount(whId2)),c:'var(--blue)',ico:'📥'},
+          {l:'GRN Today',v:String(grvSvc.todayCount(whId2)),c:'var(--blue)',ico:'📥'},
         ].map(k=>React.createElement('div',{key:k.l,className:'card',
           style:{display:'flex',alignItems:'center',gap:10,borderLeft:'3px solid '+k.c,padding:'12px 14px'}},
           React.createElement('div',{style:{fontSize:18}},k.ico),
@@ -1434,7 +1449,7 @@ function Warehouses(){
     ),
     React.createElement('div',{className:'tw'},
       React.createElement('table',null,
-        React.createElement('thead',null,React.createElement('tr',null,['Code','Warehouse','Location','Items','Users','Stock Value','GRV Today','GIV Today','Transfers','Status','Action'].map(h=>React.createElement('th',{key:h},h)))),
+        React.createElement('thead',null,React.createElement('tr',null,['Code','Warehouse','Location','Items','Users','Stock Value','GRN Today','GIN Today','Transfers','Status','Action'].map(h=>React.createElement('th',{key:h},h)))),
         React.createElement('tbody',null,
           whs.map((w,idx)=>{
             const items=itemSvc.getAll(w.id);const val=stockSvc.totalValue(w.id);
@@ -1815,12 +1830,12 @@ function Items(){
       ),
       // GRV history
       React.createElement('div',{className:'card',style:{marginBottom:12}},
-        React.createElement('div',{className:'card-hd'},React.createElement('span',{className:'card-t'},'📥 Receipt History (GRV) — '+itemGRV.length+' transactions')),
+        React.createElement('div',{className:'card-hd'},React.createElement('span',{className:'card-t'},'📥 Receipt History (GRN) — '+itemGRV.length+' transactions')),
         itemGRV.length===0
           ? React.createElement('div',{style:{padding:'20px',textAlign:'center',color:'var(--txt3)'}},'\u2014 No receipts yet \u2014')
           : React.createElement('div',{className:'tw',style:{border:'none',boxShadow:'none'}},
             React.createElement('table',null,
-              React.createElement('thead',null,React.createElement('tr',null,['GRV No.','Date','Supplier','Qty Received','Rate','Amount','Approved By'].map(h=>React.createElement('th',{key:h},h)))),
+              React.createElement('thead',null,React.createElement('tr',null,['GRN No.','Date','Supplier','Qty Received','Rate','Amount','Approved By'].map(h=>React.createElement('th',{key:h},h)))),
               React.createElement('tbody',null,
                 itemGRV.map(g=>{
                   const row=(g.items||[]).find(r=>r.itemId===item.id)||{};
@@ -1840,12 +1855,12 @@ function Items(){
       ),
       // GIV history
       React.createElement('div',{className:'card'},
-        React.createElement('div',{className:'card-hd'},React.createElement('span',{className:'card-t'},'📤 Issue History (GIV) — '+itemGIV.length+' transactions')),
+        React.createElement('div',{className:'card-hd'},React.createElement('span',{className:'card-t'},'📤 Issue History (GIN) — '+itemGIV.length+' transactions')),
         itemGIV.length===0
           ? React.createElement('div',{style:{padding:'20px',textAlign:'center',color:'var(--txt3)'}},'\u2014 No issues yet \u2014')
           : React.createElement('div',{className:'tw',style:{border:'none',boxShadow:'none'}},
             React.createElement('table',null,
-              React.createElement('thead',null,React.createElement('tr',null,['GIV No.','Date','Issued To','Qty Issued','Purpose','Approved By'].map(h=>React.createElement('th',{key:h},h)))),
+              React.createElement('thead',null,React.createElement('tr',null,['GIN No.','Date','Issued To','Qty Issued','Purpose','Approved By'].map(h=>React.createElement('th',{key:h},h)))),
               React.createElement('tbody',null,
                 itemGIV.map(g=>{
                   const row=(g.items||[]).find(r=>r.itemId===item.id)||{};
@@ -2170,7 +2185,7 @@ function Suppliers(){
           ? React.createElement('div',{style:{padding:'32px',textAlign:'center',color:'var(--txt3)'}},React.createElement('div',{style:{fontSize:32,marginBottom:8}},'📭'),React.createElement('div',null,'No GRVs from this supplier yet'))
           : React.createElement('div',{className:'tw',style:{border:'none',boxShadow:'none'}},
             React.createElement('table',null,
-              React.createElement('thead',null,React.createElement('tr',null,['GRV No.','Date','Invoice No.','Total Qty','Amount','Status','Approved By'].map(h=>React.createElement('th',{key:h},h)))),
+              React.createElement('thead',null,React.createElement('tr',null,['GRN No.','Date','Invoice No.','Total Qty','Amount','Status','Approved By'].map(h=>React.createElement('th',{key:h},h)))),
               React.createElement('tbody',null,
                 supGRVs.map(g=>React.createElement('tr',{key:g.id},
                   React.createElement('td',null,React.createElement('span',{style:{color:'var(--blue)',fontWeight:700,fontFamily:'var(--mono)',fontSize:11}},g.grvNo)),
@@ -2225,99 +2240,102 @@ function Suppliers(){
 //  GRV — GOODS RECEIPT VOUCHER
 // ════════════════════════════════════════
 function GRVEntry(){
-  const {toast,reload,whId:_gWhId,isSA:_gSA}=useCtx();
-  const [tab,setTab]=useState('list');   // 'list' | 'form' | 'view'
+  const {toast,reload,whId:_gWhId,isSA:_gSA,setModal}=useCtx();
+  const [tab,setTab]=useState('list');
   const [viewGrv,setViewGrv]=useState(null);
   const [q,setQ]=useState('');
-  const sett=settSvc.get();
-  const sym=sett.currencySymbol||'QR';
+  const sett=settSvc.get();const sym=sett.currencySymbol||'QR';
   const whs=whSvc.getAll();
-  const sups=supplierSvc.getAll();
   const [selWh,setSelWh]=useState(_gWhId||whs[0]?.id||'');
   const [grvs,setGrvs]=useState(grvSvc.getAll(_gWhId));
-  const reloadGrvs=()=>{setGrvs(grvSvc.getAll(_gWhId));reload();};
-
-  const items=itemSvc.getAll(selWh||null);
+  const [allItems,setAllItems]=useState(itemSvc.getAll(selWh||null));
+  const [allSups,setAllSups]=useState(supplierSvc.getAll());
   const racks=rackSvc.getAll(selWh||null);
+  const reloadGrvs=()=>{setGrvs(grvSvc.getAll(_gWhId));setAllItems(itemSvc.getAll(selWh||null));setAllSups(supplierSvc.getAll());reload();};
+  const UNITS=['NOS','KG','MTR','LTR','SET','BOX','PAIR','ROLL','PKT','BTL','DRM','SHT'];
 
   const blankForm=()=>({
-    grvNo:`${sett.grvPrefix||'GRV'}-${String((db.g('grv')||[]).length+1).padStart(6,'0')}`,
-    date:today(),invoiceNo:'',invoiceDate:today(),
-    supplierId:'',challanNo:'',transporter:'',vehicleNo:'',remarks:'',whId:selWh,
-    items:[{itemId:'',itemName:'',rackId:'',unit:'',qtyReceived:'',rate:'',amount:0}],
+    grvNo:`${sett.grvPrefix||'GRN'}-${String((db.g('grv')||[]).length+1).padStart(6,'0')}`,
+    date:today(),invoiceNo:'',invoiceDate:today(),supplierId:'',challanNo:'',
+    transporter:'',vehicleNo:'',remarks:'',whId:selWh,
+    items:[{itemId:'',itemName:'',rackId:'',unit:'NOS',qtyReceived:'',rate:'',amount:0}],
   });
   const [form,setForm]=useState(blankForm);
   const sf=(k,v)=>setForm(p=>({...p,[k]:v}));
 
   const setItemRow=(idx,k,v)=>{
-    const rows=[...form.items];
-    rows[idx]={...rows[idx],[k]:v};
+    const rows=[...form.items];rows[idx]={...rows[idx],[k]:v};
     if(k==='itemId'){
-      const item=items.find(i=>i.id===v);
+      const item=allItems.find(i=>i.id===v);
       if(item){rows[idx].itemName=item.name;rows[idx].rackId=item.rackId||'';rows[idx].unit=item.unit;rows[idx].rate=item.costPrice;}
     }
     if(k==='qtyReceived'||k==='rate'){
-      const qty=Number(k==='qtyReceived'?v:rows[idx].qtyReceived)||0;
-      const rate=Number(k==='rate'?v:rows[idx].rate)||0;
-      rows[idx].amount=qty*rate;
+      const q2=Number(k==='qtyReceived'?v:rows[idx].qtyReceived)||0;
+      const r=Number(k==='rate'?v:rows[idx].rate)||0;
+      rows[idx].amount=q2*r;
     }
     setForm(p=>({...p,items:rows}));
   };
-  const addRow=()=>setForm(p=>({...p,items:[...p.items,{itemId:'',itemName:'',rackId:'',unit:'',qtyReceived:'',rate:'',amount:0}]}));
+  const addRow=()=>setForm(p=>({...p,items:[...p.items,{itemId:'',itemName:'',rackId:'',unit:'NOS',qtyReceived:'',rate:'',amount:0}]}));
   const removeRow=idx=>setForm(p=>({...p,items:p.items.filter((_,i)=>i!==idx)}));
   const totalQty=form.items.reduce((s,r)=>s+Number(r.qtyReceived||0),0);
   const totalAmt=form.items.reduce((s,r)=>s+Number(r.amount||0),0);
+
+  // Quick-add new item inline
+  const quickAddItem=(idx)=>{
+    setModal(React.createElement(Modal,{title:'Quick Add New Item',onClose:()=>setModal(null),size:'sm'},
+      React.createElement(QuickItemForm,{whId:selWh,onSave:(item)=>{
+        const newItems=[...allItems,item];setAllItems(newItems);
+        const rows=[...form.items];rows[idx]={...rows[idx],itemId:item.id,itemName:item.name,unit:item.unit,rackId:item.rackId||'',rate:item.costPrice};
+        setForm(p=>({...p,items:rows}));
+        setModal(null);toast('Item added','success');reload();
+      },onClose:()=>setModal(null)})
+    ));
+  };
+
+  // Quick-add new supplier
+  const quickAddSupplier=()=>{
+    setModal(React.createElement(Modal,{title:'Quick Add Supplier',onClose:()=>setModal(null),size:'sm'},
+      React.createElement(QuickSupplierForm,{onSave:(sup)=>{
+        setAllSups([...allSups,sup]);sf('supplierId',sup.id);
+        setModal(null);toast('Supplier added','success');
+      },onClose:()=>setModal(null)})
+    ));
+  };
 
   const submitGRV=(isDraft)=>{
     if(!form.supplierId){toast('Please select a supplier','error');return;}
     const valid=form.items.filter(r=>r.itemId&&r.qtyReceived);
     if(!valid.length){toast('Add at least one item with quantity','error');return;}
-    const sup=sups.find(s=>s.id===form.supplierId);
+    const sup=allSups.find(s=>s.id===form.supplierId);
     grvSvc.create({...form,supplierName:sup?.name||'',items:valid,totalQty,totalAmount:totalAmt,whId:selWh,status:isDraft?'Draft':'Pending Approval'});
-    toast(isDraft?'GRV saved as draft':'GRV submitted — Pending Approval','success');
-    reloadGrvs();
-    setForm(blankForm());
-    setTab('list');
+    toast(isDraft?'GRN saved as draft':'GRN submitted — Pending Approval','success');
+    reloadGrvs();setForm(blankForm());setTab('list');
   };
 
-  const filteredGrvs=grvs.filter(g=>!q||
-    (g.grvNo||'').toLowerCase().includes(q.toLowerCase())||
-    (g.supplierName||'').toLowerCase().includes(q.toLowerCase())
-  );
+  const filteredGrvs=grvs.filter(g=>!q||(g.grvNo||'').toLowerCase().includes(q.toLowerCase())||(g.supplierName||'').toLowerCase().includes(q.toLowerCase()));
 
-  // ── TAB: VIEW ──
   if(tab==='view'&&viewGrv)return React.createElement('div',null,
     React.createElement('div',{className:'ph'},
-      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,viewGrv.grvNo),React.createElement('p',null,'GRV Detail')),
-      React.createElement('div',{className:'ph-r'},
-        React.createElement('button',{className:'btn btn-outline',onClick:()=>setTab('list')},'← Back to List'),
-        React.createElement('button',{className:'btn btn-outline',onClick:()=>window.print()},React.createElement(Ic,{n:'print',s:13}),' Print')
-      )
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,viewGrv.grvNo),React.createElement('p',null,'GRN Detail View')),
+      React.createElement('div',{className:'ph-r'},React.createElement('button',{className:'btn btn-outline',onClick:()=>setTab('list')},'← Back'),React.createElement('button',{className:'btn btn-outline',onClick:()=>window.print()},React.createElement(Ic,{n:'print',s:13}),' Print'))
     ),
     React.createElement('div',{className:'voucher'},
       React.createElement('div',{className:'voucher-head'},
-        React.createElement('div',null,
-          React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'var(--navy)',marginBottom:3}},sett.companyName||'GENERAL STORE'),
-          React.createElement('div',{className:'voucher-title'},'Goods Receipt Voucher (GRV)')
-        ),
-        React.createElement('div',{style:{textAlign:'right'}},
-          React.createElement('div',{className:'voucher-no'},viewGrv.grvNo),
-          React.createElement('div',{style:{fontSize:12,color:'var(--txt2)',marginTop:4}},fmtDate(viewGrv.date)),
-          React.createElement(WhBadge,{whId:viewGrv.whId})
-        )
+        React.createElement('div',null,React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'var(--navy)',marginBottom:3}},sett.companyName||'GENERAL STORE'),React.createElement('div',{className:'voucher-title'},'Goods Receipt Note (GRN)')),
+        React.createElement('div',{style:{textAlign:'right'}},React.createElement('div',{className:'voucher-no'},viewGrv.grvNo),React.createElement('div',{style:{fontSize:12,color:'var(--txt2)',marginTop:4}},fmtDate(viewGrv.date)),React.createElement(WhBadge,{whId:viewGrv.whId}))
       ),
       React.createElement('div',{className:'voucher-meta'},
         [['Supplier',viewGrv.supplierName||'-'],['Invoice No.',viewGrv.invoiceNo||'-'],['Invoice Date',fmtDate(viewGrv.invoiceDate)],['Challan No.',viewGrv.challanNo||'-'],['Transporter',viewGrv.transporter||'-'],['Vehicle No.',viewGrv.vehicleNo||'-']]
         .map(([l,v])=>React.createElement('div',{key:l,className:'voucher-field'},React.createElement('div',{className:'voucher-field-lbl'},l),React.createElement('div',{className:'voucher-field-val'},v)))
       ),
-      viewGrv.remarks&&React.createElement('div',{style:{background:'var(--off)',border:'1px solid var(--border)',borderRadius:6,padding:'8px 12px',fontSize:12,marginBottom:14}},viewGrv.remarks),
-      React.createElement('div',{style:{fontWeight:700,fontSize:13,marginBottom:10,color:'var(--navy)'}},'Item Details ('+String((viewGrv.items||[]).length)+' items)'),
+      viewGrv.remarks&&React.createElement('div',{className:'alert alert-blue',style:{marginBottom:12}},React.createElement(Ic,{n:'info',s:13}),viewGrv.remarks),
       React.createElement('div',{className:'tw',style:{marginBottom:14}},
         React.createElement('table',null,
-          React.createElement('thead',null,React.createElement('tr',null,['#','Code','Item Name','Category','Rack','UOM','Qty','Rate ('+sym+')','Amount ('+sym+')'].map(h=>React.createElement('th',{key:h},h)))),
+          React.createElement('thead',null,React.createElement('tr',null,['#','Code','Item Name','Category','Rack','UOM','Qty Received','Rate ('+sym+')','Amount ('+sym+')'].map(h=>React.createElement('th',{key:h},h)))),
           React.createElement('tbody',null,
             (viewGrv.items||[]).map((row,i)=>{
-              const item=itemSvc.getById?itemSvc.getById(row.itemId):(itemSvc.getAll(null).find(x=>x.id===row.itemId));
+              const item=itemSvc.getAll(null).find(x=>x.id===row.itemId);
               const rack=rackSvc.getAll(null).find(r=>r.id===row.rackId);
               return React.createElement('tr',{key:i},
                 React.createElement('td',null,String(i+1)),
@@ -2334,44 +2352,44 @@ function GRVEntry(){
           ),
           React.createElement('tfoot',null,React.createElement('tr',{style:{background:'var(--off2)'}},
             React.createElement('td',{colSpan:6,style:{padding:'8px 10px',fontWeight:700,border:'1px solid var(--border)'}},'Total Qty: '+String(viewGrv.totalQty||0)),
-            React.createElement('td',{colSpan:2,style:{padding:'8px 10px',fontWeight:700,textAlign:'right',border:'1px solid var(--border)'}},'Total Amount:'),
+            React.createElement('td',{colSpan:2,style:{padding:'8px 10px',fontWeight:700,textAlign:'right',border:'1px solid var(--border)'}},'Total:'),
             React.createElement('td',{style:{padding:'8px 10px',fontWeight:800,color:'var(--green)',border:'1px solid var(--border)'}},sym+' '+fmt(viewGrv.totalAmount||0,2))
           ))
         )
       ),
-      viewGrv.status==='Approved'&&viewGrv.approvedBy&&React.createElement('div',{className:'alert alert-green'},React.createElement(Ic,{n:'check',s:13}),' Approved by ',React.createElement('strong',null,viewGrv.approvedBy),' on ',fmtDate(viewGrv.approvedAt)),
-      viewGrv.status==='Rejected'&&viewGrv.rejectReason&&React.createElement('div',{className:'alert alert-red'},React.createElement(Ic,{n:'x',s:13}),' Rejected: ',viewGrv.rejectReason),
-      React.createElement('div',{className:'voucher-sign'},
-        ['Submitted By','Checked By','Approved By'].map(l=>React.createElement('div',{key:l,className:'vsign'},React.createElement('div',{className:'vsign-line'}),React.createElement('div',{className:'vsign-lbl'},l)))
-      )
+      viewGrv.status==='Approved'&&React.createElement('div',{className:'alert alert-green'},React.createElement(Ic,{n:'check',s:13}),' Approved by ',React.createElement('strong',null,viewGrv.approvedBy||'-'),' on ',fmtDate(viewGrv.approvedAt)),
+      viewGrv.status==='Rejected'&&React.createElement('div',{className:'alert alert-red'},React.createElement(Ic,{n:'x',s:13}),' Rejected: ',viewGrv.rejectReason||'-'),
+      React.createElement('div',{className:'voucher-sign'},['Submitted By','Checked By','Approved By'].map(l=>React.createElement('div',{key:l,className:'vsign'},React.createElement('div',{className:'vsign-line'}),React.createElement('div',{className:'vsign-lbl'},l))))
     )
   );
 
-  // ── TAB: FORM ──
   if(tab==='form')return React.createElement('div',null,
     React.createElement('div',{className:'ph'},
-      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'New GRV Entry'),React.createElement('p',null,'Goods Receipt Voucher')),
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'New GRN Entry'),React.createElement('p',null,'Goods Receipt Note')),
       React.createElement('div',{className:'ph-r'},
         React.createElement('button',{className:'btn btn-outline',onClick:()=>{setForm(blankForm());setTab('list');}},'← Cancel'),
         React.createElement('button',{className:'btn btn-outline',onClick:()=>submitGRV(true)},React.createElement(Ic,{n:'check',s:13}),' Save Draft'),
         React.createElement('button',{className:'btn btn-success',onClick:()=>submitGRV(false)},React.createElement(Ic,{n:'check',s:13,c:'#fff'}),' Submit for Approval')
       )
     ),
-    React.createElement('div',{className:'alert alert-blue',style:{marginBottom:12}},React.createElement(Ic,{n:'info',s:13}),' Stock will be updated ONLY after Manager/Admin approval.'),
+    React.createElement('div',{className:'alert alert-blue',style:{marginBottom:12}},React.createElement(Ic,{n:'info',s:13}),' Stock updates ONLY after Manager/Admin approves.'),
     React.createElement('div',{className:'card',style:{marginBottom:12}},
       React.createElement('div',{className:'frow3'},
-        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'GRV No.'),React.createElement('input',{className:'fi',value:form.grvNo,readOnly:true,style:{background:'var(--off2)',fontFamily:'var(--mono)',fontWeight:700}})),
-        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'GRV Date *'),React.createElement('input',{className:'fi',type:'date',value:form.date,onChange:e=>sf('date',e.target.value)})),
-        React.createElement('div',{className:'fg'},
-          _gSA?React.createElement('div',null,React.createElement('label',{className:'flbl'},'Warehouse'),React.createElement('select',{className:'fi',value:selWh,onChange:e=>{setSelWh(e.target.value);sf('whId',e.target.value);}},whs.map(w=>React.createElement('option',{key:w.id,value:w.id},w.name)))):React.createElement('div',null,React.createElement('label',{className:'flbl'},'Warehouse'),React.createElement('input',{className:'fi',value:whSvc.getById(selWh)?.name||'-',readOnly:true,style:{background:'var(--off2)'}}))
-        )
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'GRN No.'),React.createElement('input',{className:'fi',value:form.grvNo,readOnly:true,style:{background:'var(--off2)',fontFamily:'var(--mono)',fontWeight:700}})),
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'GRN Date *'),React.createElement('input',{className:'fi',type:'date',value:form.date,onChange:e=>sf('date',e.target.value)})),
+        React.createElement('div',{className:'fg'},_gSA
+          ? React.createElement('div',null,React.createElement('label',{className:'flbl'},'Warehouse'),React.createElement('select',{className:'fi',value:selWh,onChange:e=>{setSelWh(e.target.value);sf('whId',e.target.value);}},whs.map(w=>React.createElement('option',{key:w.id,value:w.id},w.name))))
+          : React.createElement('div',null,React.createElement('label',{className:'flbl'},'Warehouse'),React.createElement('input',{className:'fi',value:whSvc.getById(selWh)?.name||'-',readOnly:true,style:{background:'var(--off2)'}})))
       ),
       React.createElement('div',{className:'frow3'},
         React.createElement('div',{className:'fg'},
           React.createElement('label',{className:'flbl'},'Supplier *'),
-          React.createElement('select',{className:'fi',value:form.supplierId,onChange:e=>sf('supplierId',e.target.value)},
-            React.createElement('option',{value:''},'Select Supplier'),
-            sups.map(s=>React.createElement('option',{key:s.id,value:s.id},s.name))
+          React.createElement('div',{style:{display:'flex',gap:6}},
+            React.createElement('select',{className:'fi',style:{flex:1},value:form.supplierId,onChange:e=>sf('supplierId',e.target.value)},
+              React.createElement('option',{value:''},'Select Supplier'),
+              allSups.map(s=>React.createElement('option',{key:s.id,value:s.id},s.name))
+            ),
+            React.createElement('button',{className:'btn btn-outline btn-sm',onClick:quickAddSupplier,title:'Add new supplier',style:{whiteSpace:'nowrap'}},React.createElement(Ic,{n:'plus',s:12}),' New')
           )
         ),
         React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Invoice No.'),React.createElement('input',{className:'fi',value:form.invoiceNo,onChange:e=>sf('invoiceNo',e.target.value),placeholder:'INV-YYYY-XXX'})),
@@ -2384,53 +2402,79 @@ function GRVEntry(){
       )
     ),
     React.createElement('div',{className:'card'},
-      React.createElement('div',{style:{fontWeight:700,fontSize:13,marginBottom:10,color:'var(--navy)'}},'Item Details'),
-      React.createElement('div',{className:'item-row item-row-hd'},
-        React.createElement('span',null,'Item Name'),React.createElement('span',null,'Rack'),React.createElement('span',null,'UOM'),
-        React.createElement('span',null,'Qty Received'),React.createElement('span',null,'Rate ('+sym+')'),React.createElement('span',null,'Amount'),React.createElement('span',null,'')
+      React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+        React.createElement('div',{style:{fontWeight:700,fontSize:13,color:'var(--navy)'}},'Item Details'),
+        React.createElement('div',{style:{fontSize:11,color:'var(--txt3)'}},String(form.items.length)+' item rows')
       ),
-      form.items.map((row,idx)=>React.createElement('div',{key:idx,className:'item-row'},
-        React.createElement('select',{className:'fi',style:{fontSize:12,padding:'6px 8px'},value:row.itemId,onChange:e=>setItemRow(idx,'itemId',e.target.value)},
-          React.createElement('option',{value:''},'Select Item'),
-          items.map(i=>React.createElement('option',{key:i.id,value:i.id},i.code+' — '+i.name+' (Stk: '+String(stockSvc.getQty(i.id,i.whId))+')'))
-        ),
-        React.createElement('select',{className:'fi',style:{fontSize:12,padding:'6px 8px'},value:row.rackId,onChange:e=>setItemRow(idx,'rackId',e.target.value)},
-          React.createElement('option',{value:''},'Rack'),
-          racks.map(r=>React.createElement('option',{key:r.id,value:r.id},r.code))
-        ),
-        React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px'},value:row.unit,readOnly:true,placeholder:'UOM'}),
-        React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px'},type:'number',min:0,value:row.qtyReceived,onChange:e=>setItemRow(idx,'qtyReceived',e.target.value),placeholder:'0'}),
-        React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px'},type:'number',min:0,step:'0.01',value:row.rate,onChange:e=>setItemRow(idx,'rate',e.target.value),placeholder:'0.00'}),
-        React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px',background:'var(--off2)',fontWeight:600},value:sym+' '+fmt(row.amount||0,2),readOnly:true}),
-        React.createElement('button',{className:'btn btn-danger btn-icon',style:{width:28,height:28,minWidth:28},onClick:()=>removeRow(idx),disabled:form.items.length===1},React.createElement(Ic,{n:'x',s:12}))
-      )),
+      React.createElement('div',{style:{overflowX:'auto'}},
+        React.createElement('table',{style:{width:'100%',borderCollapse:'collapse',minWidth:800}},
+          React.createElement('thead',null,React.createElement('tr',{style:{background:'var(--off2)'}},
+            ['Item Name','Rack','UOM','Qty Received','Rate ('+sym+')','Amount',''].map(h=>React.createElement('th',{key:h,style:{padding:'8px 10px',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'.5px',color:'var(--txt2)',textAlign:'left',whiteSpace:'nowrap',borderBottom:'2px solid var(--border)'}},h))
+          )),
+          React.createElement('tbody',null,
+            form.items.map((row,idx)=>React.createElement('tr',{key:idx,style:{borderBottom:'1px solid var(--border)'}},
+              React.createElement('td',{style:{padding:'6px 6px 6px 0'}},
+                React.createElement('div',{style:{display:'flex',gap:5,alignItems:'center'}},
+                  React.createElement('select',{className:'fi',style:{fontSize:12,padding:'6px 8px',flex:1},value:row.itemId,onChange:e=>setItemRow(idx,'itemId',e.target.value)},
+                    React.createElement('option',{value:''},'Select item...'),
+                    allItems.map(i=>React.createElement('option',{key:i.id,value:i.id},i.code+' — '+i.name+' ('+String(stockSvc.getQty(i.id,i.whId))+' '+i.unit+')'))
+                  ),
+                  React.createElement('button',{className:'btn btn-outline btn-icon',style:{width:28,height:28,minWidth:28,flexShrink:0,padding:0},title:'Add new item',onClick:()=>quickAddItem(idx)},React.createElement(Ic,{n:'plus',s:11}))
+                )
+              ),
+              React.createElement('td',{style:{padding:'6px'}},
+                React.createElement('select',{className:'fi',style:{fontSize:12,padding:'6px 8px',minWidth:80},value:row.rackId,onChange:e=>setItemRow(idx,'rackId',e.target.value)},
+                  React.createElement('option',{value:''},'Rack'),
+                  racks.map(r=>React.createElement('option',{key:r.id,value:r.id},r.code))
+                )
+              ),
+              React.createElement('td',{style:{padding:'6px'}},
+                React.createElement('select',{className:'fi',style:{fontSize:12,padding:'6px 8px',minWidth:80},value:row.unit,onChange:e=>setItemRow(idx,'unit',e.target.value)},
+                  UNITS.map(u=>React.createElement('option',{key:u,value:u},u))
+                )
+              ),
+              React.createElement('td',{style:{padding:'6px'}},
+                React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px',width:90},type:'number',min:0,value:row.qtyReceived,onChange:e=>setItemRow(idx,'qtyReceived',e.target.value),placeholder:'0'})
+              ),
+              React.createElement('td',{style:{padding:'6px'}},
+                React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px',width:100},type:'number',min:0,step:'0.01',value:row.rate,onChange:e=>setItemRow(idx,'rate',e.target.value),placeholder:'0.00'})
+              ),
+              React.createElement('td',{style:{padding:'6px'}},
+                React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px',background:'var(--off2)',fontWeight:600,width:110},value:sym+' '+fmt(row.amount||0,2),readOnly:true})
+              ),
+              React.createElement('td',{style:{padding:'6px'}},
+                React.createElement('button',{className:'btn btn-danger btn-icon',style:{width:28,height:28,minWidth:28,padding:0},onClick:()=>removeRow(idx),disabled:form.items.length===1},React.createElement(Ic,{n:'x',s:12}))
+              )
+            ))
+          )
+        )
+      ),
       React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:12,paddingTop:10,borderTop:'1px solid var(--border)'}},
         React.createElement('button',{className:'btn btn-outline btn-sm',onClick:addRow},React.createElement(Ic,{n:'plus',s:12}),' Add Row'),
-        React.createElement('div',{style:{fontWeight:700,fontSize:13}},'Total: '+String(totalQty)+' qty · ',React.createElement('span',{style:{color:'var(--green)'}},sym+' '+fmt(totalAmt,2)))
+        React.createElement('div',{style:{background:'var(--off2)',borderRadius:8,padding:'8px 16px',fontWeight:700,fontSize:13}},
+          'Total: '+String(totalQty)+' qty · ',React.createElement('span',{style:{color:'var(--green)',fontSize:15}},sym+' '+fmt(totalAmt,2))
+        )
       )
     )
   );
 
-  // ── TAB: LIST (default) ──
   return React.createElement('div',null,
     React.createElement('div',{className:'ph'},
-      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'GRV — Goods Receipt Voucher'),React.createElement('p',null,String(grvs.length)+' records')),
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'GRN — Goods Receipt Note'),React.createElement('p',null,String(grvs.length)+' records')),
       React.createElement('div',{className:'ph-r'},
         _gSA&&React.createElement('select',{className:'fs',value:selWh,onChange:e=>{setSelWh(e.target.value);setGrvs(grvSvc.getAll(e.target.value||null));}},whs.map(w=>React.createElement('option',{key:w.id,value:w.id},w.name))),
-        React.createElement('button',{className:'btn btn-primary',onClick:()=>{setForm(blankForm());setTab('form');}},React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' + New GRV')
+        React.createElement('button',{className:'btn btn-primary',onClick:()=>{setForm(blankForm());setTab('form');}},React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' + New GRN')
       )
     ),
     React.createElement('div',{className:'sb-bar'},
-      React.createElement('div',{className:'si'},React.createElement('div',{className:'si-ico'},React.createElement(Ic,{n:'search',s:13,c:'var(--txt3)'})),React.createElement('input',{placeholder:'Search GRV No. / Supplier...',value:q,onChange:e=>setQ(e.target.value)}))
+      React.createElement('div',{className:'si'},React.createElement('div',{className:'si-ico'},React.createElement(Ic,{n:'search',s:13,c:'var(--txt3)'})),React.createElement('input',{placeholder:'Search GRN No. / Supplier...',value:q,onChange:e=>setQ(e.target.value)}))
     ),
     React.createElement('div',{className:'tw'},
       React.createElement('table',null,
-        React.createElement('thead',null,React.createElement('tr',null,
-          ['GRV No.','Date',_gSA&&'Warehouse','Supplier','Invoice No.','Qty','Amount ('+sym+')','Status','Action'].filter(Boolean).map(h=>React.createElement('th',{key:h},h))
-        )),
+        React.createElement('thead',null,React.createElement('tr',null,['GRN No.','Date',_gSA&&'Warehouse','Supplier','Invoice No.','Qty','Amount ('+sym+')','Status','Action'].filter(Boolean).map(h=>React.createElement('th',{key:h},h)))),
         React.createElement('tbody',null,
           filteredGrvs.length===0
-            ? React.createElement('tr',null,React.createElement('td',{colSpan:9},React.createElement('div',{className:'te'},'No GRV records yet. Click + New GRV to create one.')))
+            ? React.createElement('tr',null,React.createElement('td',{colSpan:9},React.createElement('div',{className:'te'},'No GRN records yet. Click + New GRN to create one.')))
             : filteredGrvs.map(g=>React.createElement('tr',{key:g.id,style:{cursor:'pointer'},onClick:()=>{setViewGrv(g);setTab('view');}},
               React.createElement('td',null,React.createElement('span',{style:{color:'var(--blue)',fontWeight:700,fontFamily:'var(--mono)',fontSize:11}},g.grvNo)),
               React.createElement('td',null,fmtDate(g.date)),
@@ -2445,45 +2489,111 @@ function GRVEntry(){
         )
       )
     ),
-    React.createElement('div',{style:{marginTop:8,fontSize:11,color:'var(--txt3)',textAlign:'center'}},'💡 Click any row to view the full GRV voucher')
+    React.createElement('div',{style:{marginTop:8,fontSize:11,color:'var(--txt3)',textAlign:'center'}},'💡 Click any row to view the full GRN voucher')
+  );
+}
+
+// ── QUICK HELPER FORMS ──
+function QuickItemForm({whId,onSave,onClose}){
+  const whs=whSvc.getAll();
+  const racks=rackSvc.getAll(whId);
+  const [f,setF]=useState({name:'',code:'',category:'MECH',unit:'NOS',costPrice:'',minStock:'5',rackId:'',whId:whId||whs[0]?.id||'',status:'Active'});
+  const s=(k,v)=>setF(p=>({...p,[k]:v}));
+  const [e,setE]=useState({});
+  const UNITS2=['NOS','KG','MTR','LTR','SET','BOX','PAIR','ROLL','PKT','BTL','DRM','SHT'];
+  const save=()=>{
+    const err={};
+    if(!f.name)err.name='Required';
+    if(!f.costPrice||isNaN(f.costPrice))err.costPrice='Required';
+    if(Object.keys(err).length){setE(err);return;}
+    const code=itemSvc.nextCode(f.category,f.whId);
+    const item=itemSvc.create({...f,code,costPrice:Number(f.costPrice),minStock:Number(f.minStock)});
+    stockSvc.setQty(item.id,item.whId,0);
+    onSave(item);
+  };
+  return React.createElement('div',null,
+    React.createElement('div',{className:'frow'},
+      React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Item Name *'),React.createElement('input',{className:'fi',value:f.name,onChange:ev=>s('name',ev.target.value),autoFocus:true}),e.name&&React.createElement('div',{className:'fe'},e.name)),
+      React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Category'),React.createElement('select',{className:'fi',value:f.category,onChange:ev=>s('category',ev.target.value)},CATS.map(c=>React.createElement('option',{key:c.id,value:c.id},c.name))))
+    ),
+    React.createElement('div',{className:'frow'},
+      React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'UOM'),React.createElement('select',{className:'fi',value:f.unit,onChange:ev=>s('unit',ev.target.value)},UNITS2.map(u=>React.createElement('option',{key:u,value:u},u)))),
+      React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Cost Price *'),React.createElement('input',{className:'fi',type:'number',value:f.costPrice,onChange:ev=>s('costPrice',ev.target.value)}),e.costPrice&&React.createElement('div',{className:'fe'},e.costPrice))
+    ),
+    React.createElement('div',{className:'frow'},
+      React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Min Stock Level'),React.createElement('input',{className:'fi',type:'number',value:f.minStock,onChange:ev=>s('minStock',ev.target.value)})),
+      React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Rack'),React.createElement('select',{className:'fi',value:f.rackId,onChange:ev=>s('rackId',ev.target.value)},React.createElement('option',{value:''},'Select Rack'),racks.map(r=>React.createElement('option',{key:r.id,value:r.id},r.code+' — '+r.name))))
+    ),
+    React.createElement('div',{style:{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}},
+      React.createElement('button',{className:'btn btn-outline',onClick:onClose},'Cancel'),
+      React.createElement('button',{className:'btn btn-primary',onClick:save},'Add Item')
+    )
+  );
+}
+
+function QuickSupplierForm({onSave,onClose}){
+  const [f,setF]=useState({name:'',contact:'',email:'',status:'Active'});
+  const s=(k,v)=>setF(p=>({...p,[k]:v}));
+  const [e,setE]=useState({});
+  const save=()=>{if(!f.name){setE({name:'Required'});return;}const sup=supplierSvc.create(f);onSave(sup);};
+  return React.createElement('div',null,
+    React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Supplier Name *'),React.createElement('input',{className:'fi',value:f.name,onChange:ev=>s('name',ev.target.value),autoFocus:true}),e.name&&React.createElement('div',{className:'fe'},e.name)),
+    React.createElement('div',{className:'frow'},
+      React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Contact No.'),React.createElement('input',{className:'fi',value:f.contact,onChange:ev=>s('contact',ev.target.value)})),
+      React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Email'),React.createElement('input',{className:'fi',value:f.email,onChange:ev=>s('email',ev.target.value)}))
+    ),
+    React.createElement('div',{style:{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}},
+      React.createElement('button',{className:'btn btn-outline',onClick:onClose},'Cancel'),
+      React.createElement('button',{className:'btn btn-primary',onClick:save},'Add Supplier')
+    )
   );
 }
 
 function GIVEntry(){
-  const {toast,reload,whId:_ivWhId,isSA:_ivSA}=useCtx();
-  const [tab,setTab]=useState('list');   // 'list' | 'form' | 'view'
+  const {toast,reload,whId:_ivWhId,isSA:_ivSA,setModal}=useCtx();
+  const [tab,setTab]=useState('list');
   const [viewGiv,setViewGiv]=useState(null);
   const [q,setQ]=useState('');
-  const sett=settSvc.get();
-  const sym=sett.currencySymbol||'QR';
+  const sett=settSvc.get();const sym=sett.currencySymbol||'QR';
   const whs=whSvc.getAll();
   const [selWh,setSelWh]=useState(_ivWhId||whs[0]?.id||'');
   const [givs,setGivs]=useState(givSvc.getAll(_ivWhId));
-  const reloadGivs=()=>{setGivs(givSvc.getAll(_ivWhId));reload();};
-
-  const items=itemSvc.getAll(selWh||null);
+  const [allItems,setAllItems]=useState(itemSvc.getAll(selWh||null));
   const racks=rackSvc.getAll(selWh||null);
+  const reloadGivs=()=>{setGivs(givSvc.getAll(_ivWhId));setAllItems(itemSvc.getAll(selWh||null));reload();};
+  const UNITS=['NOS','KG','MTR','LTR','SET','BOX','PAIR','ROLL','PKT','BTL','DRM','SHT'];
   const DEPTS=['Maintenance Dept.','Production Dept.','Electrical Dept.','Instrumentation Dept.','Safety Dept.','Quality Dept.','Administration'];
 
   const blankForm=()=>({
-    givNo:`${sett.givPrefix||'GIV'}-${String((db.g('giv')||[]).length+1).padStart(6,'0')}`,
+    givNo:`${sett.givPrefix||'GIN'}-${String((db.g('giv')||[]).length+1).padStart(6,'0')}`,
     date:today(),issuedTo:'',purpose:'',remarks:'',whId:selWh,
-    items:[{itemId:'',itemName:'',rackId:'',unit:'',availableQty:0,qtyIssued:'',remarks:''}],
+    items:[{itemId:'',itemName:'',rackId:'',unit:'NOS',availableQty:0,qtyIssued:'',remarks:''}],
   });
   const [form,setForm]=useState(blankForm);
   const sf=(k,v)=>setForm(p=>({...p,[k]:v}));
 
   const setItemRow=(idx,k,v)=>{
-    const rows=[...form.items];
-    rows[idx]={...rows[idx],[k]:v};
+    const rows=[...form.items];rows[idx]={...rows[idx],[k]:v};
     if(k==='itemId'){
-      const item=items.find(i=>i.id===v);
+      const item=allItems.find(i=>i.id===v);
       if(item){rows[idx].itemName=item.name;rows[idx].rackId=item.rackId||'';rows[idx].unit=item.unit;rows[idx].availableQty=stockSvc.getQty(item.id,item.whId||selWh);}
     }
     setForm(p=>({...p,items:rows}));
   };
-  const addRow=()=>setForm(p=>({...p,items:[...p.items,{itemId:'',itemName:'',rackId:'',unit:'',availableQty:0,qtyIssued:'',remarks:''}]}));
+  const addRow=()=>setForm(p=>({...p,items:[...p.items,{itemId:'',itemName:'',rackId:'',unit:'NOS',availableQty:0,qtyIssued:'',remarks:''}]}));
   const removeRow=idx=>setForm(p=>({...p,items:p.items.filter((_,i)=>i!==idx)}));
+
+  // Quick-add new item inline
+  const quickAddItem=(idx)=>{
+    setModal(React.createElement(Modal,{title:'Quick Add New Item',onClose:()=>setModal(null),size:'sm'},
+      React.createElement(QuickItemForm,{whId:selWh,onSave:(item)=>{
+        const newItems=[...allItems,item];setAllItems(newItems);
+        const rows=[...form.items];rows[idx]={...rows[idx],itemId:item.id,itemName:item.name,unit:item.unit,rackId:item.rackId||'',availableQty:stockSvc.getQty(item.id,item.whId)};
+        setForm(p=>({...p,items:rows}));
+        setModal(null);toast('Item added','success');reload();
+      },onClose:()=>setModal(null)})
+    ));
+  };
 
   const submitGIV=()=>{
     if(!form.issuedTo){toast('Please select a department','error');return;}
@@ -2491,48 +2601,32 @@ function GIVEntry(){
     if(!valid.length){toast('Add at least one item with quantity','error');return;}
     for(const row of valid){
       if(Number(row.qtyIssued)>Number(row.availableQty)){
-        const item=items.find(i=>i.id===row.itemId);
+        const item=allItems.find(i=>i.id===row.itemId);
         toast('Insufficient stock for: '+(item?.name||row.itemId),'error');return;
       }
     }
     givSvc.create({...form,items:valid,totalItems:valid.length,whId:selWh});
-    toast('GIV submitted — Pending Approval','success');
-    reloadGivs();
-    setForm(blankForm());
-    setTab('list');
+    toast('GIN submitted — Pending Approval','success');
+    reloadGivs();setForm(blankForm());setTab('list');
   };
 
-  const filteredGivs=givs.filter(g=>!q||
-    (g.givNo||'').toLowerCase().includes(q.toLowerCase())||
-    (g.issuedTo||'').toLowerCase().includes(q.toLowerCase())
-  );
+  const filteredGivs=givs.filter(g=>!q||(g.givNo||'').toLowerCase().includes(q.toLowerCase())||(g.issuedTo||'').toLowerCase().includes(q.toLowerCase()));
 
   // ── TAB: VIEW ──
   if(tab==='view'&&viewGiv)return React.createElement('div',null,
     React.createElement('div',{className:'ph'},
-      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,viewGiv.givNo),React.createElement('p',null,'GIV Detail')),
-      React.createElement('div',{className:'ph-r'},
-        React.createElement('button',{className:'btn btn-outline',onClick:()=>setTab('list')},'← Back to List'),
-        React.createElement('button',{className:'btn btn-outline',onClick:()=>window.print()},React.createElement(Ic,{n:'print',s:13}),' Print')
-      )
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,viewGiv.givNo),React.createElement('p',null,'GIN Detail View')),
+      React.createElement('div',{className:'ph-r'},React.createElement('button',{className:'btn btn-outline',onClick:()=>setTab('list')},'← Back'),React.createElement('button',{className:'btn btn-outline',onClick:()=>window.print()},React.createElement(Ic,{n:'print',s:13}),' Print'))
     ),
     React.createElement('div',{className:'voucher'},
       React.createElement('div',{className:'voucher-head'},
-        React.createElement('div',null,
-          React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'var(--navy)',marginBottom:3}},sett.companyName||'GENERAL STORE'),
-          React.createElement('div',{className:'voucher-title'},'Goods Issue Voucher (GIV)')
-        ),
-        React.createElement('div',{style:{textAlign:'right'}},
-          React.createElement('div',{className:'voucher-no'},viewGiv.givNo),
-          React.createElement('div',{style:{fontSize:12,color:'var(--txt2)',marginTop:4}},fmtDate(viewGiv.date)),
-          React.createElement(WhBadge,{whId:viewGiv.whId})
-        )
+        React.createElement('div',null,React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'var(--navy)',marginBottom:3}},sett.companyName||'GENERAL STORE'),React.createElement('div',{className:'voucher-title'},'Goods Issue Note (GIN)')),
+        React.createElement('div',{style:{textAlign:'right'}},React.createElement('div',{className:'voucher-no'},viewGiv.givNo),React.createElement('div',{style:{fontSize:12,color:'var(--txt2)',marginTop:4}},fmtDate(viewGiv.date)),React.createElement(WhBadge,{whId:viewGiv.whId}))
       ),
       React.createElement('div',{className:'voucher-meta'},
         [['Issued To',viewGiv.issuedTo||'-'],['Purpose',viewGiv.purpose||'-'],['Date',fmtDate(viewGiv.date)],['Remarks',viewGiv.remarks||'-']]
         .map(([l,v])=>React.createElement('div',{key:l,className:'voucher-field'},React.createElement('div',{className:'voucher-field-lbl'},l),React.createElement('div',{className:'voucher-field-val'},v)))
       ),
-      React.createElement('div',{style:{fontWeight:700,fontSize:13,marginBottom:10,color:'var(--navy)'}},'Item Details ('+String((viewGiv.items||[]).length)+' items)'),
       React.createElement('div',{className:'tw',style:{marginBottom:14}},
         React.createElement('table',null,
           React.createElement('thead',null,React.createElement('tr',null,['#','Code','Item Name','Category','Rack','UOM','Qty Issued','Remarks'].map(h=>React.createElement('th',{key:h},h)))),
@@ -2547,40 +2641,38 @@ function GIVEntry(){
                 React.createElement('td',null,React.createElement(CatBadge,{catId:item?.category})),
                 React.createElement('td',null,rack?React.createElement('span',{style:{color:'var(--blue)',fontFamily:'var(--mono)',fontSize:11}},rack.code):'-'),
                 React.createElement('td',null,row.unit||'-'),
-                React.createElement('td',null,React.createElement('span',{style:{fontWeight:700,color:'var(--red)'}},String(row.qtyIssued||0))),
+                React.createElement('td',null,React.createElement('span',{style:{fontWeight:700,color:'var(--red)',fontSize:14}},String(row.qtyIssued||0))),
                 React.createElement('td',null,row.remarks||'-')
               );
             })
           )
         )
       ),
-      viewGiv.status==='Approved'&&viewGiv.approvedBy&&React.createElement('div',{className:'alert alert-green'},React.createElement(Ic,{n:'check',s:13}),' Approved by ',React.createElement('strong',null,viewGiv.approvedBy),' on ',fmtDate(viewGiv.approvedAt)),
-      viewGiv.status==='Rejected'&&viewGiv.rejectReason&&React.createElement('div',{className:'alert alert-red'},React.createElement(Ic,{n:'x',s:13}),' Rejected: ',viewGiv.rejectReason),
-      React.createElement('div',{className:'voucher-sign'},
-        ['Issued By','Checked By','Received By'].map(l=>React.createElement('div',{key:l,className:'vsign'},React.createElement('div',{className:'vsign-line'}),React.createElement('div',{className:'vsign-lbl'},l)))
-      )
+      viewGiv.status==='Approved'&&React.createElement('div',{className:'alert alert-green'},React.createElement(Ic,{n:'check',s:13}),' Approved by ',React.createElement('strong',null,viewGiv.approvedBy||'-'),' on ',fmtDate(viewGiv.approvedAt)),
+      viewGiv.status==='Rejected'&&React.createElement('div',{className:'alert alert-red'},React.createElement(Ic,{n:'x',s:13}),' Rejected: ',viewGiv.rejectReason||'-'),
+      React.createElement('div',{className:'voucher-sign'},['Issued By','Checked By','Received By'].map(l=>React.createElement('div',{key:l,className:'vsign'},React.createElement('div',{className:'vsign-line'}),React.createElement('div',{className:'vsign-lbl'},l))))
     )
   );
 
   // ── TAB: FORM ──
   if(tab==='form')return React.createElement('div',null,
     React.createElement('div',{className:'ph'},
-      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'New GIV Entry'),React.createElement('p',null,'Goods Issue Voucher')),
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'New GIN Entry'),React.createElement('p',null,'Goods Issue Note')),
       React.createElement('div',{className:'ph-r'},
         React.createElement('button',{className:'btn btn-outline',onClick:()=>{setForm(blankForm());setTab('list');}},'← Cancel'),
         React.createElement('button',{className:'btn btn-success',onClick:submitGIV},React.createElement(Ic,{n:'check',s:13,c:'#fff'}),' Submit for Approval')
       )
     ),
-    React.createElement('div',{className:'alert alert-blue',style:{marginBottom:12}},React.createElement(Ic,{n:'info',s:13}),' Stock will be deducted ONLY after Manager/Admin approval.'),
+    React.createElement('div',{className:'alert alert-blue',style:{marginBottom:12}},React.createElement(Ic,{n:'info',s:13}),' Stock deducted ONLY after Manager/Admin approves.'),
     React.createElement('div',{className:'card',style:{marginBottom:12}},
       React.createElement('div',{className:'frow3'},
-        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'GIV No.'),React.createElement('input',{className:'fi',value:form.givNo,readOnly:true,style:{background:'var(--off2)',fontFamily:'var(--mono)',fontWeight:700}})),
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'GIN No.'),React.createElement('input',{className:'fi',value:form.givNo,readOnly:true,style:{background:'var(--off2)',fontFamily:'var(--mono)',fontWeight:700}})),
         React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Date *'),React.createElement('input',{className:'fi',type:'date',value:form.date,onChange:e=>sf('date',e.target.value)})),
-        React.createElement('div',{className:'fg'},
-          _ivSA?React.createElement('div',null,React.createElement('label',{className:'flbl'},'Warehouse'),React.createElement('select',{className:'fi',value:selWh,onChange:e=>{setSelWh(e.target.value);sf('whId',e.target.value);}},whs.map(w=>React.createElement('option',{key:w.id,value:w.id},w.name)))):React.createElement('div',null,React.createElement('label',{className:'flbl'},'Warehouse'),React.createElement('input',{className:'fi',value:whSvc.getById(selWh)?.name||'-',readOnly:true,style:{background:'var(--off2)'}}))
-        )
+        React.createElement('div',{className:'fg'},_ivSA
+          ? React.createElement('div',null,React.createElement('label',{className:'flbl'},'Warehouse'),React.createElement('select',{className:'fi',value:selWh,onChange:e=>{setSelWh(e.target.value);sf('whId',e.target.value);}},whs.map(w=>React.createElement('option',{key:w.id,value:w.id},w.name))))
+          : React.createElement('div',null,React.createElement('label',{className:'flbl'},'Warehouse'),React.createElement('input',{className:'fi',value:whSvc.getById(selWh)?.name||'-',readOnly:true,style:{background:'var(--off2)'}})))
       ),
-      React.createElement('div',{className:'frow'},
+      React.createElement('div',{className:'frow3'},
         React.createElement('div',{className:'fg'},
           React.createElement('label',{className:'flbl'},'Issue To / Department *'),
           React.createElement('select',{className:'fi',value:form.issuedTo,onChange:e=>sf('issuedTo',e.target.value)},
@@ -2593,23 +2685,47 @@ function GIVEntry(){
       )
     ),
     React.createElement('div',{className:'card'},
-      React.createElement('div',{style:{fontWeight:700,fontSize:13,marginBottom:10,color:'var(--navy)'}},'Item Details'),
-      React.createElement('div',{className:'item-row item-row-hd'},
-        React.createElement('span',null,'Item Name'),React.createElement('span',null,'Rack'),React.createElement('span',null,'UOM'),
-        React.createElement('span',null,'Available'),React.createElement('span',null,'Qty to Issue'),React.createElement('span',null,'Remarks'),React.createElement('span',null,'')
+      React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+        React.createElement('div',{style:{fontWeight:700,fontSize:13,color:'var(--navy)'}},'Item Details'),
+        React.createElement('div',{style:{fontSize:11,color:'var(--txt3)'}},String(form.items.length)+' rows')
       ),
-      form.items.map((row,idx)=>React.createElement('div',{key:idx,className:'item-row'},
-        React.createElement('select',{className:'fi',style:{fontSize:12,padding:'6px 8px'},value:row.itemId,onChange:e=>setItemRow(idx,'itemId',e.target.value)},
-          React.createElement('option',{value:''},'Select Item'),
-          items.map(i=>React.createElement('option',{key:i.id,value:i.id},i.code+' — '+i.name))
-        ),
-        React.createElement('span',{style:{fontSize:11,color:'var(--blue)',fontFamily:'var(--mono)',padding:'0 4px'}},row.rackId?racks.find(r=>r.id===row.rackId)?.code||'-':'-'),
-        React.createElement('span',{style:{fontSize:12,padding:'0 4px'}},row.unit||'-'),
-        React.createElement('span',{style:{fontWeight:700,fontSize:13,color:row.availableQty>0?'var(--green)':'var(--red)',padding:'0 4px'}},String(row.availableQty),' ',row.unit||''),
-        React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px'},type:'number',min:1,max:row.availableQty,value:row.qtyIssued,onChange:e=>setItemRow(idx,'qtyIssued',e.target.value),placeholder:'0'}),
-        React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px'},value:row.remarks||'',onChange:e=>setItemRow(idx,'remarks',e.target.value),placeholder:'Purpose...'}),
-        React.createElement('button',{className:'btn btn-danger btn-icon',style:{width:28,height:28,minWidth:28},onClick:()=>removeRow(idx),disabled:form.items.length===1},React.createElement(Ic,{n:'x',s:12}))
-      )),
+      React.createElement('div',{style:{overflowX:'auto'}},
+        React.createElement('table',{style:{width:'100%',borderCollapse:'collapse',minWidth:700}},
+          React.createElement('thead',null,React.createElement('tr',{style:{background:'var(--off2)'}},
+            ['Item Name','UOM','Available','Qty to Issue','Remarks',''].map(h=>React.createElement('th',{key:h,style:{padding:'8px 10px',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'.5px',color:'var(--txt2)',textAlign:'left',borderBottom:'2px solid var(--border)'}},h))
+          )),
+          React.createElement('tbody',null,
+            form.items.map((row,idx)=>React.createElement('tr',{key:idx,style:{borderBottom:'1px solid var(--border)'}},
+              React.createElement('td',{style:{padding:'6px 6px 6px 0'}},
+                React.createElement('div',{style:{display:'flex',gap:5,alignItems:'center'}},
+                  React.createElement('select',{className:'fi',style:{fontSize:12,padding:'6px 8px',flex:1},value:row.itemId,onChange:e=>setItemRow(idx,'itemId',e.target.value)},
+                    React.createElement('option',{value:''},'Select item...'),
+                    allItems.map(i=>React.createElement('option',{key:i.id,value:i.id},i.code+' — '+i.name))
+                  ),
+                  React.createElement('button',{className:'btn btn-outline btn-icon',style:{width:28,height:28,minWidth:28,flexShrink:0,padding:0},title:'Add new item',onClick:()=>quickAddItem(idx)},React.createElement(Ic,{n:'plus',s:11}))
+                )
+              ),
+              React.createElement('td',{style:{padding:'6px'}},
+                React.createElement('select',{className:'fi',style:{fontSize:12,padding:'6px 8px',minWidth:80},value:row.unit,onChange:e=>setItemRow(idx,'unit',e.target.value)},
+                  UNITS.map(u=>React.createElement('option',{key:u,value:u},u))
+                )
+              ),
+              React.createElement('td',{style:{padding:'6px'}},
+                React.createElement('span',{style:{fontWeight:700,fontSize:14,color:row.availableQty>0?'var(--green)':'var(--red)',display:'block',minWidth:60,textAlign:'center'}},String(row.availableQty),' ',row.unit||'')
+              ),
+              React.createElement('td',{style:{padding:'6px'}},
+                React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px',width:90,border:Number(row.qtyIssued)>Number(row.availableQty)?'2px solid var(--red)':''},type:'number',min:1,max:row.availableQty,value:row.qtyIssued,onChange:e=>setItemRow(idx,'qtyIssued',e.target.value),placeholder:'0'})
+              ),
+              React.createElement('td',{style:{padding:'6px'}},
+                React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px',minWidth:140},value:row.remarks||'',onChange:e=>setItemRow(idx,'remarks',e.target.value),placeholder:'Purpose...'})
+              ),
+              React.createElement('td',{style:{padding:'6px'}},
+                React.createElement('button',{className:'btn btn-danger btn-icon',style:{width:28,height:28,minWidth:28,padding:0},onClick:()=>removeRow(idx),disabled:form.items.length===1},React.createElement(Ic,{n:'x',s:12}))
+              )
+            ))
+          )
+        )
+      ),
       React.createElement('div',{style:{marginTop:12,paddingTop:10,borderTop:'1px solid var(--border)'}},
         React.createElement('button',{className:'btn btn-outline btn-sm',onClick:addRow},React.createElement(Ic,{n:'plus',s:12}),' Add Item')
       )
@@ -2619,23 +2735,23 @@ function GIVEntry(){
   // ── TAB: LIST (default) ──
   return React.createElement('div',null,
     React.createElement('div',{className:'ph'},
-      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'GIV — Goods Issue Voucher'),React.createElement('p',null,String(givs.length)+' records')),
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'GIN — Goods Issue Note'),React.createElement('p',null,String(givs.length)+' records')),
       React.createElement('div',{className:'ph-r'},
         _ivSA&&React.createElement('select',{className:'fs',value:selWh,onChange:e=>{setSelWh(e.target.value);setGivs(givSvc.getAll(e.target.value||null));}},whs.map(w=>React.createElement('option',{key:w.id,value:w.id},w.name))),
-        React.createElement('button',{className:'btn btn-primary',onClick:()=>{setForm(blankForm());setTab('form');}},React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' + New GIV')
+        React.createElement('button',{className:'btn btn-primary',onClick:()=>{setForm(blankForm());setTab('form');}},React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' + New GIN')
       )
     ),
     React.createElement('div',{className:'sb-bar'},
-      React.createElement('div',{className:'si'},React.createElement('div',{className:'si-ico'},React.createElement(Ic,{n:'search',s:13,c:'var(--txt3)'})),React.createElement('input',{placeholder:'Search GIV No. / Dept...',value:q,onChange:e=>setQ(e.target.value)}))
+      React.createElement('div',{className:'si'},React.createElement('div',{className:'si-ico'},React.createElement(Ic,{n:'search',s:13,c:'var(--txt3)'})),React.createElement('input',{placeholder:'Search GIN No. / Dept...',value:q,onChange:e=>setQ(e.target.value)}))
     ),
     React.createElement('div',{className:'tw'},
       React.createElement('table',null,
         React.createElement('thead',null,React.createElement('tr',null,
-          ['GIV No.','Date',_ivSA&&'Warehouse','Issued To','Purpose','Items','Status','Action'].filter(Boolean).map(h=>React.createElement('th',{key:h},h))
+          ['GIN No.','Date',_ivSA&&'Warehouse','Issued To','Purpose','Items','Status','Action'].filter(Boolean).map(h=>React.createElement('th',{key:h},h))
         )),
         React.createElement('tbody',null,
           filteredGivs.length===0
-            ? React.createElement('tr',null,React.createElement('td',{colSpan:8},React.createElement('div',{className:'te'},'No GIV records yet. Click + New GIV to create one.')))
+            ? React.createElement('tr',null,React.createElement('td',{colSpan:8},React.createElement('div',{className:'te'},'No GIN records yet. Click + New GIN to create one.')))
             : filteredGivs.map(g=>React.createElement('tr',{key:g.id,style:{cursor:'pointer'},onClick:()=>{setViewGiv(g);setTab('view');}},
               React.createElement('td',null,React.createElement('span',{style:{color:'var(--amber)',fontWeight:700,fontFamily:'var(--mono)',fontSize:11}},g.givNo)),
               React.createElement('td',null,fmtDate(g.date)),
@@ -2649,9 +2765,11 @@ function GIVEntry(){
         )
       )
     ),
-    React.createElement('div',{style:{marginTop:8,fontSize:11,color:'var(--txt3)',textAlign:'center'}},'💡 Click any row to view the full GIV voucher')
+    React.createElement('div',{style:{marginTop:8,fontSize:11,color:'var(--txt3)',textAlign:'center'}},'💡 Click any row to view the full GIN voucher')
   );
 }
+
+
 
 
 // ════════════════════════════════════════
@@ -2759,7 +2877,7 @@ function StockView(){
 // ════════════════════════════════════════
 function Reports(){
   const {toast,whId,isSA}=useCtx();
-  const [tab,setTab]=useState('grv');
+  const [tab,setTab]=useState('grn');
   const sett=settSvc.get();
   const sym=sett.currencySymbol||'QR';
   const whs=whSvc.getAll();
@@ -2805,8 +2923,8 @@ function Reports(){
     // Report type cards
     React.createElement('div',{className:'grid g4',style:{marginBottom:20}},
       [
-        {id:'grv',label:'GRV Register',sub:'View material receipt details',icon:'📥'},
-        {id:'giv',label:'GIV Register',sub:'View material issue details',icon:'📤'},
+        {id:'grn',label:'GRN Register',sub:'View material receipt details',icon:'📥'},
+        {id:'gin',label:'GIN Register',sub:'View material issue details',icon:'📤'},
         {id:'stock',label:'Stock Ledger',sub:'View stock transactions and balance',icon:'📊'},
         {id:'lowstock',label:'Low Stock Report',sub:'View low stock items report',icon:'⚠️'},
       ].map(r=>React.createElement('div',{key:r.id,className:`card`,style:{cursor:'pointer',borderLeft:`3px solid ${tab===r.id?'var(--blue)':'transparent'}`,background:tab===r.id?'var(--blue-light)':'#fff'},onClick:()=>setTab(r.id)},
@@ -2817,9 +2935,9 @@ function Reports(){
     ),
 
     // GRV Register
-    tab==='grv'&&React.createElement('div',{className:'card'},
+    tab==='grn'&&React.createElement('div',{className:'card'},
       React.createElement('div',{className:'card-hd'},
-        React.createElement('span',{className:'card-t'},'GRV Register'),
+        React.createElement('span',{className:'card-t'},'GRN Register'),
         React.createElement('button',{className:'btn btn-outline btn-sm',onClick:()=>exportCSV(filtGRV,[{label:'GRV No',key:'grvNo'},{label:'Date',fn:r=>fmtDate(r.date)},{label:'Supplier',key:'supplierName'},{label:'Invoice No',key:'invoiceNo'},{label:'Total Qty',key:'totalQty'},{label:'Total Amount',key:'totalAmount'},{label:'Status',key:'status'}],'grv-register.csv')},React.createElement(Ic,{n:'download',s:12}),' Export CSV')
       ),
       React.createElement('div',{className:'sb'},
@@ -2832,7 +2950,7 @@ function Reports(){
       ),
       React.createElement('div',{className:'tw',style:{border:'none',boxShadow:'none'}},
         React.createElement('table',null,
-          React.createElement('thead',null,React.createElement('tr',null,['GRV No.','Date','Invoice No.','Supplier Name','Total Qty','Total Amount ('+sym+')','Status','Action'].map(h=>React.createElement('th',{key:h},h)))),
+          React.createElement('thead',null,React.createElement('tr',null,['GRN No.','Date','Invoice No.','Supplier Name','Total Qty','Total Amount ('+sym+')','Status','Action'].map(h=>React.createElement('th',{key:h},h)))),
           React.createElement('tbody',null,
             filtGRV.length===0
               ? React.createElement('tr',null,React.createElement('td',{colSpan:8},React.createElement('div',{className:'te'},'No records')))
@@ -2857,9 +2975,9 @@ function Reports(){
     ),
 
     // GIV Register
-    tab==='giv'&&React.createElement('div',{className:'card'},
+    tab==='gin'&&React.createElement('div',{className:'card'},
       React.createElement('div',{className:'card-hd'},
-        React.createElement('span',{className:'card-t'},'GIV Register'),
+        React.createElement('span',{className:'card-t'},'GIN Register'),
         React.createElement('button',{className:'btn btn-outline btn-sm',onClick:()=>exportCSV(filtGIV,[{label:'GIV No',key:'givNo'},{label:'Date',fn:r=>fmtDate(r.date)},{label:'Issued To',key:'issuedTo'},{label:'Purpose',key:'purpose'},{label:'Total Items',key:'totalItems'},{label:'Status',key:'status'}],'giv-register.csv')},React.createElement(Ic,{n:'download',s:12}),' Export CSV')
       ),
       React.createElement('div',{className:'sb'},
@@ -2869,7 +2987,7 @@ function Reports(){
       ),
       React.createElement('div',{className:'tw',style:{border:'none',boxShadow:'none'}},
         React.createElement('table',null,
-          React.createElement('thead',null,React.createElement('tr',null,['GIV No.','Date','Issued To','Purpose','Total Items','Status','Action'].map(h=>React.createElement('th',{key:h},h)))),
+          React.createElement('thead',null,React.createElement('tr',null,['GIN No.','Date','Issued To','Purpose','Total Items','Status','Action'].map(h=>React.createElement('th',{key:h},h)))),
           React.createElement('tbody',null,
             filtGIV.length===0
               ? React.createElement('tr',null,React.createElement('td',{colSpan:7},React.createElement('div',{className:'te'},'No records')))
@@ -3159,9 +3277,11 @@ function Users(){
 // ════════════════════════════════════════
 function Approvals(){
   const {toast,setModal,user:me,reload,whId,isSA}=useCtx();
-  const [tab,setTab]=useState('grv');
+  const [tab,setTab]=useState('grn');
+  const [detail,setDetail]=useState(null);
   const [r,setR]=useState(0);
   const reloadPage=()=>{setR(x=>x+1);reload();};
+  const sym=settSvc.get().currencySymbol||'QR';
 
   const canGRV=isSA||me?.canApproveGRV;
   const canGIV=isSA||me?.canApproveGIV;
@@ -3173,23 +3293,23 @@ function Approvals(){
   const pendGIV=allGIV.filter(g=>g.status==='Pending Approval');
   const pendTRN=allTRN.filter(t=>t.status==='Pending Approval');
 
-  const scColor=s=>({'Pending Approval':'amber','Approved':'green','Rejected':'red','Draft':'gray'}[s]||'gray');
-  const scIcon=s=>({'Pending Approval':'⏳','Approved':'✅','Rejected':'❌','Draft':'📝'}[s]||'');
+  const sc=s=>s==='Approved'?'green':s==='Rejected'?'red':s==='Draft'?'gray':'amber';
+  const si=s=>({'Pending Approval':'⏳','Approved':'✅','Rejected':'❌','Draft':'📝'}[s]||'');
 
   const openReject=(type,id)=>{
     let reason='';
-    setModal(React.createElement(Modal,{title:'Reject — Enter Reason',onClose:()=>setModal(null),size:'sm'},
+    setModal(React.createElement(Modal,{title:'Enter Rejection Reason',onClose:()=>setModal(null),size:'sm'},
       React.createElement('div',{className:'fg'},
-        React.createElement('label',{className:'flbl'},'Reason for Rejection *'),
-        React.createElement('textarea',{className:'fi',rows:3,placeholder:'e.g. Incorrect quantity, Wrong item...',onChange:ev=>{reason=ev.target.value;}})
+        React.createElement('label',{className:'flbl'},'Reason *'),
+        React.createElement('textarea',{className:'fi',rows:3,placeholder:'e.g. Incorrect quantity, Wrong item, Price mismatch...',onChange:ev=>{reason=ev.target.value;}})
       ),
       null,
       React.createElement('div',{style:{display:'flex',gap:8,justifyContent:'flex-end'}},
         React.createElement('button',{className:'btn btn-outline',onClick:()=>setModal(null)},'Cancel'),
         React.createElement('button',{className:'btn btn-danger',onClick:()=>{
           if(!reason.trim()){toast('Enter a reason','error');return;}
-          if(type==='grv')grvSvc.reject(id,me.name,reason);
-          else if(type==='giv')givSvc.reject(id,me.name,reason);
+          if(type==='grn')grvSvc.reject(id,me.name,reason);
+          else if(type==='gin')givSvc.reject(id,me.name,reason);
           else trnSvc.reject(id,me.name,reason);
           toast('Rejected','success');setModal(null);reloadPage();
         }},'Confirm Reject')
@@ -3198,93 +3318,206 @@ function Approvals(){
   };
 
   const doApprove=(type,id)=>{
-    if(type==='grv')grvSvc.approve(id,me.name);
-    else if(type==='giv')givSvc.approve(id,me.name);
+    if(type==='grn')grvSvc.approve(id,me.name);
+    else if(type==='gin')givSvc.approve(id,me.name);
     else trnSvc.approve(id,me.name);
     toast((type==='transfer'?'Transfer':'Voucher')+' Approved — Stock updated!','success');
     reloadPage();
   };
 
+  // ── DETAIL VIEW ──
+  if(detail){
+    const v=detail.data;const type=detail.type;
+    const isPend=v.status==='Pending Approval';
+    const canAct=(type==='grn'?canGRV:type==='gin'?canGIV:isSA)&&isPend;
+    const vNo=type==='grn'?v.grvNo:type==='gin'?v.givNo:v.trnNo;
+    const title=type==='grn'?'Goods Receipt Note':type==='gin'?'Goods Issue Note':'Stock Transfer';
+    return React.createElement('div',null,
+      React.createElement('div',{onClick:()=>setDetail(null),style:{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'var(--blue)',cursor:'pointer',marginBottom:14,padding:'5px 14px',background:'var(--blue-light)',borderRadius:6,border:'1px solid var(--blue-mid)'}},React.createElement(Ic,{n:'back',s:13}),' Back to Approvals'),
+      React.createElement('div',{className:'ph'},
+        React.createElement('div',{className:'ph-l'},
+          React.createElement('h1',null,vNo||'Detail'),
+          React.createElement('p',null,title+' — '+v.status)
+        ),
+        canAct&&React.createElement('div',{className:'ph-r'},
+          React.createElement('button',{className:'btn btn-success',onClick:()=>{doApprove(type,v.id);setDetail(null);}},React.createElement(Ic,{n:'check',s:13,c:'#fff'}),' ✅ Approve & Update Stock'),
+          React.createElement('button',{className:'btn btn-danger',onClick:()=>openReject(type,v.id)},React.createElement(Ic,{n:'x',s:13}),' ❌ Reject')
+        )
+      ),
+      // Status banner
+      React.createElement('div',{className:'alert '+(v.status==='Approved'?'alert-green':v.status==='Rejected'?'alert-red':'alert-amber'),style:{marginBottom:14}},
+        React.createElement('span',{style:{fontSize:16,marginRight:8}},si(v.status)),
+        React.createElement('strong',null,v.status),
+        v.approvedBy&&React.createElement('span',null,' — by ',React.createElement('strong',null,v.approvedBy),' on ',fmtDate(v.approvedAt)),
+        v.rejectReason&&React.createElement('span',null,' — Reason: ',v.rejectReason)
+      ),
+      // Meta info
+      React.createElement('div',{className:'grid '+(type==='transfer'?'g3':'g3'),style:{marginBottom:14}},
+        type==='transfer'
+          ? [
+              React.createElement('div',{key:'from',className:'card',style:{borderLeft:'3px solid var(--red)',padding:'12px 14px'}},React.createElement('div',{style:{fontSize:11,color:'var(--txt3)',marginBottom:4}},'FROM WAREHOUSE'),React.createElement(WhBadge,{whId:v.fromWhId}),React.createElement('div',{style:{fontSize:11,color:'var(--txt2)',marginTop:4}},whSvc.getById(v.fromWhId)?.name||'-')),
+              React.createElement('div',{key:'arrow',className:'card',style:{display:'flex',alignItems:'center',justifyContent:'center',fontSize:28,color:'var(--blue)'}},'\u2192'),
+              React.createElement('div',{key:'to',className:'card',style:{borderLeft:'3px solid var(--green)',padding:'12px 14px'}},React.createElement('div',{style:{fontSize:11,color:'var(--txt3)',marginBottom:4}},'TO WAREHOUSE'),React.createElement(WhBadge,{whId:v.toWhId}),React.createElement('div',{style:{fontSize:11,color:'var(--txt2)',marginTop:4}},whSvc.getById(v.toWhId)?.name||'-')),
+            ]
+          : [
+              React.createElement('div',{key:'wh',className:'card',style:{borderLeft:'3px solid var(--blue)',padding:'12px 14px'}},React.createElement('div',{style:{fontSize:11,color:'var(--txt3)',marginBottom:4}},type==='grn'?'WAREHOUSE':'WAREHOUSE'),React.createElement(WhBadge,{whId:v.whId})),
+              React.createElement('div',{key:'sup',className:'card',style:{borderLeft:'3px solid var(--purple)',padding:'12px 14px'}},React.createElement('div',{style:{fontSize:11,color:'var(--txt3)',marginBottom:4}},type==='grn'?'SUPPLIER':'ISSUED TO'),React.createElement('div',{style:{fontWeight:600}},type==='grn'?v.supplierName||'-':v.issuedTo||'-')),
+              React.createElement('div',{key:'date',className:'card',style:{borderLeft:'3px solid var(--teal)',padding:'12px 14px'}},React.createElement('div',{style:{fontSize:11,color:'var(--txt3)',marginBottom:4}},type==='grn'?'INVOICE NO.':'PURPOSE'),React.createElement('div',{style:{fontWeight:600}},type==='grn'?v.invoiceNo||'-':v.purpose||'-')),
+            ]
+      ),
+      // Items table
+      React.createElement('div',{className:'card'},
+        React.createElement('div',{className:'card-hd'},
+          React.createElement('span',{className:'card-t'},'Items Detail — '+String((v.items||[]).length)+' items'),
+          type!=='transfer'&&React.createElement('div',{style:{fontWeight:700,color:'var(--green)'}},
+            sym+' '+fmt((v.totalAmount||v.items?.reduce((s,r)=>s+Number(r.amount||0),0)||0),2)
+          )
+        ),
+        React.createElement('div',{className:'tw',style:{border:'none',boxShadow:'none'}},
+          React.createElement('table',null,
+            React.createElement('thead',null,React.createElement('tr',null,
+              (type==='transfer'
+                ? ['#','Item Code','Item Name','Category','UOM','Qty Transferred']
+                : type==='grn'
+                  ? ['#','Item Code','Item Name','Category','Rack','UOM','Qty','Rate ('+sym+')','Amount ('+sym+')']
+                  : ['#','Item Code','Item Name','Category','UOM','Qty Issued','Purpose']
+              ).map(h=>React.createElement('th',{key:h},h))
+            )),
+            React.createElement('tbody',null,
+              (v.items||[]).length===0
+                ? React.createElement('tr',null,React.createElement('td',{colSpan:9},React.createElement('div',{className:'te'},'No items')))
+                : (v.items||[]).map((row,i)=>{
+                  const item=itemSvc.getAll(null).find(x=>x.id===row.itemId);
+                  const rack=type==='grn'?rackSvc.getAll(null).find(r=>r.id===row.rackId):null;
+                  return React.createElement('tr',{key:i},
+                    React.createElement('td',null,String(i+1)),
+                    React.createElement('td',null,React.createElement('span',{style:{fontFamily:'var(--mono)',fontWeight:600,fontSize:11,color:'var(--blue)'}},item?.code||'-')),
+                    React.createElement('td',null,React.createElement('span',{style:{fontWeight:600}},item?.name||row.itemName||'-')),
+                    React.createElement('td',null,React.createElement(CatBadge,{catId:item?.category})),
+                    ...(type==='grn'
+                      ? [
+                          React.createElement('td',{key:'rack'},rack?React.createElement('span',{style:{color:'var(--blue)',fontFamily:'var(--mono)',fontSize:11}},rack.code):'-'),
+                          React.createElement('td',{key:'uom'},row.unit||'-'),
+                          React.createElement('td',{key:'qty'},React.createElement('span',{style:{fontWeight:700,color:'var(--green)',fontSize:14}},String(row.qtyReceived||0))),
+                          React.createElement('td',{key:'rate'},sym+' '+fmt(row.rate||0,2)),
+                          React.createElement('td',{key:'amt'},React.createElement('strong',{style:{color:'var(--green)'}},sym+' '+fmt(row.amount||0,2))),
+                        ]
+                      : type==='gin'
+                        ? [
+                            React.createElement('td',{key:'uom'},row.unit||'-'),
+                            React.createElement('td',{key:'qty'},React.createElement('span',{style:{fontWeight:700,color:'var(--red)',fontSize:14}},String(row.qtyIssued||0))),
+                            React.createElement('td',{key:'rem'},row.remarks||v.purpose||'-'),
+                          ]
+                        : [
+                            React.createElement('td',{key:'uom'},row.unit||'-'),
+                            React.createElement('td',{key:'qty'},React.createElement('span',{style:{fontWeight:700,color:'var(--teal)',fontSize:14}},String(row.qty||0))),
+                          ]
+                    )
+                  );
+                })
+            ),
+            type==='grn'&&React.createElement('tfoot',null,
+              React.createElement('tr',{style:{background:'var(--off2)'}},
+                React.createElement('td',{colSpan:6,style:{padding:'8px 10px',fontWeight:700,border:'1px solid var(--border)'}},'Total Qty: '+String(v.totalQty||0)),
+                React.createElement('td',{colSpan:2,style:{padding:'8px 10px',fontWeight:700,textAlign:'right',border:'1px solid var(--border)'}},'Total:'),
+                React.createElement('td',{style:{padding:'8px 10px',fontWeight:800,color:'var(--green)',border:'1px solid var(--border)'}},sym+' '+fmt(v.totalAmount||0,2))
+              )
+            )
+          )
+        )
+      ),
+      // Submitted by
+      React.createElement('div',{className:'card',style:{marginTop:12,padding:'12px 16px'}},
+        React.createElement('div',{style:{display:'flex',gap:24,fontSize:12}},
+          React.createElement('div',null,React.createElement('div',{style:{fontSize:10,color:'var(--txt3)',marginBottom:2}},'SUBMITTED BY'),React.createElement('div',{style:{fontWeight:600}},v.submittedBy||me?.name||'-')),
+          React.createElement('div',null,React.createElement('div',{style:{fontSize:10,color:'var(--txt3)',marginBottom:2}},'DATE'),React.createElement('div',{style:{fontWeight:600}},fmtDate(v.date))),
+          v.remarks&&React.createElement('div',null,React.createElement('div',{style:{fontSize:10,color:'var(--txt3)',marginBottom:2}},'REMARKS'),React.createElement('div',{style:{fontWeight:600}},v.remarks)),
+          v.purpose&&type==='transfer'&&React.createElement('div',null,React.createElement('div',{style:{fontSize:10,color:'var(--txt3)',marginBottom:2}},'PURPOSE'),React.createElement('div',{style:{fontWeight:600}},v.purpose))
+        )
+      )
+    );
+  }
+
+  // ── MAIN APPROVALS LIST ──
   const VRow=(v,type)=>{
     const isPend=v.status==='Pending Approval';
-    const canAct=(type==='grv'?canGRV:type==='giv'?canGIV:isSA)&&isPend;
-    const vNo=type==='grv'?v.grvNo:type==='giv'?v.givNo:v.trnNo;
-    const colr=type==='grv'?'var(--blue)':type==='giv'?'var(--amber)':'#0d9488';
-    const detail=type==='transfer'
-      ? React.createElement('span',null,React.createElement(WhBadge,{whId:v.fromWhId}),' → ',React.createElement(WhBadge,{whId:v.toWhId}))
-      : (type==='grv'?v.supplierName:v.issuedTo)||'-';
-    return React.createElement('tr',{key:v.id,style:{background:isPend?'var(--amber-light)':''}},
-      React.createElement('td',null,React.createElement('span',{style:{color:colr,fontWeight:700,fontFamily:'var(--mono)',fontSize:11}},vNo||'—')),
+    const canAct=(type==='grn'?canGRV:type==='gin'?canGIV:isSA)&&isPend;
+    const vNo=type==='grn'?v.grvNo:type==='gin'?v.givNo:v.trnNo;
+    const colr=type==='grn'?'var(--blue)':type==='gin'?'var(--amber)':'#0d9488';
+    const mainDetail=type==='transfer'
+      ? React.createElement('span',null,React.createElement(WhBadge,{whId:v.fromWhId}),' \u2192 ',React.createElement(WhBadge,{whId:v.toWhId}))
+      : React.createElement('span',null,type==='grn'?v.supplierName:v.issuedTo);
+    return React.createElement('tr',{key:v.id,style:{background:isPend?'#fffdf0':'',cursor:'pointer'},onClick:()=>setDetail({type,data:v})},
+      React.createElement('td',null,React.createElement('span',{style:{color:colr,fontWeight:700,fontFamily:'var(--mono)',fontSize:11}},vNo||'\u2014')),
       React.createElement('td',null,fmtDate(v.date)),
-      React.createElement('td',null,detail),
+      React.createElement('td',null,mainDetail),
       isSA&&React.createElement('td',null,React.createElement(WhBadge,{whId:v.whId||v.fromWhId})),
-      React.createElement('td',null,React.createElement('span',{style:{marginRight:3}},scIcon(v.status)),React.createElement(Badge,{c:scColor(v.status)},v.status)),
-      React.createElement('td',null,v.approvedBy?React.createElement('div',null,React.createElement('div',{style:{fontWeight:600,fontSize:12}},v.approvedBy),React.createElement('div',{style:{fontSize:10,color:'var(--txt3)'}},fmtDate(v.approvedAt))):'-'),
-      React.createElement('td',null,v.rejectReason?React.createElement('span',{style:{fontSize:11,color:'var(--red)',display:'block',maxWidth:140}},v.rejectReason):'-'),
-      React.createElement('td',null,canAct
-        ? React.createElement('div',{style:{display:'flex',gap:5}},
-          React.createElement('button',{className:'btn btn-success btn-sm',onClick:()=>doApprove(type,v.id)},React.createElement(Ic,{n:'check',s:12,c:'#fff'}),' Approve'),
-          React.createElement('button',{className:'btn btn-danger btn-sm',onClick:()=>openReject(type,v.id)},React.createElement(Ic,{n:'x',s:12}),' Reject')
+      React.createElement('td',null,String((v.items||[]).length)+' items'),
+      React.createElement('td',null,React.createElement('span',{style:{marginRight:3}},si(v.status)),React.createElement(Badge,{c:sc(v.status)},v.status)),
+      React.createElement('td',null,v.approvedBy
+        ? React.createElement('div',null,React.createElement('div',{style:{fontWeight:600,fontSize:12}},v.approvedBy),React.createElement('div',{style:{fontSize:10,color:'var(--txt3)'}},fmtDate(v.approvedAt)))
+        : '\u2014'),
+      React.createElement('td',{onClick:e=>e.stopPropagation()},
+        React.createElement('div',{style:{display:'flex',gap:5}},
+          React.createElement('button',{className:'btn btn-outline btn-xs',onClick:()=>setDetail({type,data:v})},React.createElement(Ic,{n:'eye',s:11}),' View'),
+          canAct&&React.createElement('button',{className:'btn btn-success btn-xs',onClick:()=>doApprove(type,v.id)},'\u2713 OK'),
+          canAct&&React.createElement('button',{className:'btn btn-danger btn-xs',onClick:()=>openReject(type,v.id)},'\u2715')
         )
-        : React.createElement('span',{style:{fontSize:11,color:'var(--txt3)'}},'—')
       )
     );
   };
 
   const TblHd=(type)=>React.createElement('thead',null,React.createElement('tr',null,
-    [type==='grv'?'GRV No.':type==='giv'?'GIV No.':'Transfer No.','Date',type==='transfer'?'Route':'Detail',isSA&&'Warehouse','Status','Approved By','Reason','Action'].filter(Boolean).map(h=>React.createElement('th',{key:h},h))
+    [type==='grn'?'GRN No.':type==='gin'?'GIN No.':'Transfer No.','Date',type==='transfer'?'Route':'Detail',isSA&&'Warehouse','Items','Status','Approved By','Action'].filter(Boolean).map(h=>React.createElement('th',{key:h},h))
   ));
-
-  const noAccess=!canGRV&&!canGIV&&!isSA;
-  if(noAccess)return React.createElement('div',null,
-    React.createElement('div',{className:'ph'},React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Approvals'))),
-    React.createElement('div',{className:'card',style:{padding:'60px 20px',textAlign:'center'}},
-      React.createElement('div',{style:{fontSize:40,marginBottom:14}},'🔒'),
-      React.createElement('div',{style:{fontSize:15,fontWeight:700,marginBottom:8}},'No Approval Permission'),
-      React.createElement('div',{style:{fontSize:13,color:'var(--txt2)'}},`You don't have GRV or GIV approval permission. Contact Super Admin.`)
-    )
-  );
 
   return React.createElement('div',null,
     React.createElement('div',{className:'ph'},
-      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Approvals'),React.createElement('p',null,'Review and approve pending GRV, GIV and Stock Transfers'))
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Approvals'),React.createElement('p',null,'Review and approve GRN, GIN and Stock Transfers. Click any row for full details.'))
     ),
-    // Summary cards
     React.createElement('div',{className:'grid g4',style:{marginBottom:14}},
-      [{l:'Pending GRV',v:pendGRV.length,c:'var(--amber)',ico:'⏳'},{l:'Pending GIV',v:pendGIV.length,c:'var(--amber)',ico:'⏳'},{l:'Pending Transfers',v:pendTRN.length,c:'#0d9488',ico:'🔄'},{l:'Approved Today',v:[...allGRV,...allGIV,...allTRN].filter(x=>x.status==='Approved'&&x.approvedAt?.startsWith(today())).length,c:'var(--green)',ico:'✅'}]
-        .map(k=>React.createElement('div',{key:k.l,className:'card',style:{display:'flex',alignItems:'center',gap:11,borderLeft:`3px solid ${k.c}`,padding:'12px 14px'}},
-          React.createElement('div',{style:{fontSize:22}},k.ico),
-          React.createElement('div',null,React.createElement('div',{style:{fontSize:20,fontWeight:800,color:k.c}},k.v),React.createElement('div',{style:{fontSize:11,color:'var(--txt2)'}},k.l))
-        ))
+      [
+        {l:'Pending GRN',v:pendGRV.length,c:'var(--amber)',ico:'⏳',fn:()=>setTab('grn')},
+        {l:'Pending GIN',v:pendGIV.length,c:'var(--amber)',ico:'⏳',fn:()=>setTab('gin')},
+        {l:'Pending Transfers',v:pendTRN.length,c:'#0d9488',ico:'🔄',fn:()=>setTab('transfer')},
+        {l:'Approved Today',v:[...allGRV,...allGIV,...allTRN].filter(x=>x.status==='Approved'&&(x.approvedAt||'').startsWith(today())).length,c:'var(--green)',ico:'✅',fn:()=>setTab('history')},
+      ].map(k=>React.createElement('div',{key:k.l,className:'card',style:{display:'flex',alignItems:'center',gap:11,borderLeft:'3px solid '+k.c,padding:'12px 14px',cursor:'pointer'},onClick:k.fn},
+        React.createElement('div',{style:{fontSize:22}},k.ico),
+        React.createElement('div',null,React.createElement('div',{style:{fontSize:20,fontWeight:800,color:k.c}},String(k.v)),React.createElement('div',{style:{fontSize:11,color:'var(--txt2)'}},k.l))
+      ))
     ),
     React.createElement('div',{className:'tabs'},
-      canGRV&&React.createElement('div',{className:`tab${tab==='grv'?' on':''}`,onClick:()=>setTab('grv')},'📥 GRV',pendGRV.length>0&&React.createElement('span',{style:{background:'var(--red)',color:'#fff',borderRadius:20,padding:'1px 6px',fontSize:9,fontWeight:700,marginLeft:4}},pendGRV.length)),
-      canGIV&&React.createElement('div',{className:`tab${tab==='giv'?' on':''}`,onClick:()=>setTab('giv')},'📤 GIV',pendGIV.length>0&&React.createElement('span',{style:{background:'var(--red)',color:'#fff',borderRadius:20,padding:'1px 6px',fontSize:9,fontWeight:700,marginLeft:4}},pendGIV.length)),
-      isSA&&React.createElement('div',{className:`tab${tab==='transfer'?' on':''}`,onClick:()=>setTab('transfer')},'🔄 Transfers',pendTRN.length>0&&React.createElement('span',{style:{background:'var(--red)',color:'#fff',borderRadius:20,padding:'1px 6px',fontSize:9,fontWeight:700,marginLeft:4}},pendTRN.length)),
-      React.createElement('div',{className:`tab${tab==='history'?' on':''}`,onClick:()=>setTab('history')},'📋 History')
+      canGRV&&React.createElement('div',{className:'tab'+(tab==='grn'?' on':''),onClick:()=>setTab('grn')},'📥 GRN',pendGRV.length>0&&React.createElement('span',{style:{background:'var(--red)',color:'#fff',borderRadius:20,padding:'1px 6px',fontSize:9,fontWeight:700,marginLeft:4}},String(pendGRV.length))),
+      canGIV&&React.createElement('div',{className:'tab'+(tab==='gin'?' on':''),onClick:()=>setTab('gin')},'📤 GIN',pendGIV.length>0&&React.createElement('span',{style:{background:'var(--red)',color:'#fff',borderRadius:20,padding:'1px 6px',fontSize:9,fontWeight:700,marginLeft:4}},String(pendGIV.length))),
+      isSA&&React.createElement('div',{className:'tab'+(tab==='transfer'?' on':''),onClick:()=>setTab('transfer')},'🔄 Transfers',pendTRN.length>0&&React.createElement('span',{style:{background:'var(--red)',color:'#fff',borderRadius:20,padding:'1px 6px',fontSize:9,fontWeight:700,marginLeft:4}},String(pendTRN.length))),
+      React.createElement('div',{className:'tab'+(tab==='history'?' on':''),onClick:()=>setTab('history')},'📋 History')
     ),
-    tab==='grv'&&canGRV&&React.createElement('div',{className:'tw'},React.createElement('table',null,TblHd('grv'),React.createElement('tbody',null,allGRV.length===0?React.createElement('tr',null,React.createElement('td',{colSpan:8},React.createElement('div',{className:'te'},'No GRV records'))):allGRV.map(v=>VRow(v,'grv'))))),
-    tab==='giv'&&canGIV&&React.createElement('div',{className:'tw'},React.createElement('table',null,TblHd('giv'),React.createElement('tbody',null,allGIV.length===0?React.createElement('tr',null,React.createElement('td',{colSpan:8},React.createElement('div',{className:'te'},'No GIV records'))):allGIV.map(v=>VRow(v,'giv'))))),
-    tab==='transfer'&&isSA&&React.createElement('div',{className:'tw'},React.createElement('table',null,TblHd('transfer'),React.createElement('tbody',null,allTRN.length===0?React.createElement('tr',null,React.createElement('td',{colSpan:9},React.createElement('div',{className:'te'},'No transfer records'))):allTRN.map(v=>VRow(v,'transfer'))))),
+    tab==='grn'&&canGRV&&React.createElement('div',{className:'tw'},React.createElement('table',null,TblHd('grn'),React.createElement('tbody',null,allGRV.length===0?React.createElement('tr',null,React.createElement('td',{colSpan:8},React.createElement('div',{className:'te'},'No GRN records'))):allGRV.map(v=>VRow(v,'grn'))))),
+    tab==='gin'&&canGIV&&React.createElement('div',{className:'tw'},React.createElement('table',null,TblHd('gin'),React.createElement('tbody',null,allGIV.length===0?React.createElement('tr',null,React.createElement('td',{colSpan:8},React.createElement('div',{className:'te'},'No GIN records'))):allGIV.map(v=>VRow(v,'gin'))))),
+    tab==='transfer'&&isSA&&React.createElement('div',{className:'tw'},React.createElement('table',null,TblHd('transfer'),React.createElement('tbody',null,allTRN.length===0?React.createElement('tr',null,React.createElement('td',{colSpan:9},React.createElement('div',{className:'te'},'No transfers'))):allTRN.map(v=>VRow(v,'transfer'))))),
     tab==='history'&&React.createElement('div',{className:'tw'},
       React.createElement('table',null,
-        React.createElement('thead',null,React.createElement('tr',null,['Voucher No.','Type','Date','Warehouse','Status','Approved By'].map(h=>React.createElement('th',{key:h},h)))),
+        React.createElement('thead',null,React.createElement('tr',null,['Voucher No.','Type','Date','Warehouse','Items','Status','Approved By','Action'].map(h=>React.createElement('th',{key:h},h)))),
         React.createElement('tbody',null,
-          [...allGRV.map(g=>({...g,type:'GRV',vNo:g.grvNo,wId:g.whId})),...allGIV.map(g=>({...g,type:'GIV',vNo:g.givNo,wId:g.whId})),...allTRN.map(t=>({...t,type:'Transfer',vNo:t.trnNo,wId:t.fromWhId}))]
+          [...allGRV.map(g=>({...g,dtype:'grn',vNo:g.grvNo,wId:g.whId})),...allGIV.map(g=>({...g,dtype:'gin',vNo:g.givNo,wId:g.whId})),...allTRN.map(t=>({...t,dtype:'transfer',vNo:t.trnNo,wId:t.fromWhId}))]
           .sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt))
-          .map(v=>React.createElement('tr',{key:v.id+v.type},
-            React.createElement('td',null,React.createElement('span',{style:{fontWeight:700,fontFamily:'var(--mono)',fontSize:11,color:v.type==='GRV'?'var(--blue)':v.type==='GIV'?'var(--amber)':'#0d9488'}},v.vNo||'—')),
-            React.createElement('td',null,React.createElement(Badge,{c:v.type==='GRV'?'blue':v.type==='GIV'?'amber':'teal'},v.type)),
+          .map(v=>React.createElement('tr',{key:v.id+v.dtype,style:{cursor:'pointer'},onClick:()=>setDetail({type:v.dtype,data:v})},
+            React.createElement('td',null,React.createElement('span',{style:{fontWeight:700,fontFamily:'var(--mono)',fontSize:11,color:v.dtype==='grn'?'var(--blue)':v.dtype==='gin'?'var(--amber)':'#0d9488'}},v.vNo||'\u2014')),
+            React.createElement('td',null,React.createElement(Badge,{c:v.dtype==='grn'?'blue':v.dtype==='gin'?'amber':'teal'},v.dtype.toUpperCase())),
             React.createElement('td',null,fmtDate(v.date)),
             React.createElement('td',null,React.createElement(WhBadge,{whId:v.wId})),
-            React.createElement('td',null,React.createElement('span',{style:{marginRight:3}},scIcon(v.status)),React.createElement(Badge,{c:scColor(v.status)},v.status)),
-            React.createElement('td',null,v.approvedBy||'-')
+            React.createElement('td',null,String((v.items||[]).length)),
+            React.createElement('td',null,React.createElement('span',{style:{marginRight:3}},si(v.status)),React.createElement(Badge,{c:sc(v.status)},v.status)),
+            React.createElement('td',null,v.approvedBy||'\u2014'),
+            React.createElement('td',null,React.createElement('button',{className:'btn btn-outline btn-xs',onClick:e=>{e.stopPropagation();setDetail({type:v.dtype,data:v});}},React.createElement(Ic,{n:'eye',s:11}),' View'))
           ))
         )
       )
-    )
+    ),
+    React.createElement('div',{style:{marginTop:8,fontSize:11,color:'var(--txt3)',textAlign:'center'}},'💡 Click any row to view full details and approve/reject')
   );
 }
+
 function Settings(){
   const {toast}=useCtx();
   const [s,setS]=useState(settSvc.get());
@@ -3322,8 +3555,8 @@ function Settings(){
         React.createElement('div',{className:'card',style:{marginBottom:14}},
           React.createElement('div',{className:'card-hd'},React.createElement('span',{className:'card-t'},'Voucher Numbering')),
           React.createElement('div',{className:'frow'},
-            React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'GRV Prefix'),React.createElement('input',{className:'fi',value:s.grvPrefix||'GRV',onChange:e=>sf('grvPrefix',e.target.value),placeholder:'GRV'})),
-            React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'GIV Prefix'),React.createElement('input',{className:'fi',value:s.givPrefix||'GIV',onChange:e=>sf('givPrefix',e.target.value),placeholder:'GIV'}))
+            React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'GRN Prefix'),React.createElement('input',{className:'fi',value:s.grvPrefix||'GRN',onChange:e=>sf('grvPrefix',e.target.value),placeholder:'GRV'})),
+            React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'GIN Prefix'),React.createElement('input',{className:'fi',value:s.givPrefix||'GIN',onChange:e=>sf('givPrefix',e.target.value),placeholder:'GIV'}))
           ),
           React.createElement('div',{className:'alert alert-blue',style:{marginTop:4}},React.createElement(Ic,{n:'info',s:12}),'Voucher numbers are auto-generated using the prefix followed by a 6-digit sequence (e.g., GRV-000001)')
         ),
@@ -3368,8 +3601,8 @@ function App(){
     items:['Masters','Item Master'],
     racks:['Masters','Rack Management'],
     suppliers:['Masters','Supplier Master'],
-    grv:['Transaction','GRV Entry'],
-    giv:['Transaction','GIV Entry'],
+    grv:['Transaction','GRN Entry'],
+    giv:['Transaction','GIN Entry'],
     transfer:['Transaction','Stock Transfer'],
     approvals:['Transaction','Approvals'],
     stockview:['Inventory','Stock View'],

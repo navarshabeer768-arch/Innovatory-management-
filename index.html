@@ -1728,14 +1728,17 @@ function ItemForm({initial,onSave,onClose}){
   );
 }
 
+// ════════════════════════════════════════
+//  ITEMS — with click-to-detail
+// ════════════════════════════════════════
 function Items(){
   const {toast,setModal,whId,isSA,reload}=useCtx();
   const whs=whSvc.getAll();
   const [items,setItems]=useState(itemSvc.getAll(whId));
   const [q,setQ]=useState('');
   const [catF,setCatF]=useState('');
-  const [statusF,setStatusF]=useState('');
   const [whF,setWhF]=useState(whId||'');
+  const [detail,setDetail]=useState(null); // clicked item detail
   const racks=rackSvc.getAll(whF||null);
   const sym=settSvc.get().currencySymbol||'QR';
   const reloadItems=()=>{setItems(itemSvc.getAll(whF||null));reload();};
@@ -1743,115 +1746,198 @@ function Items(){
   const filtered=useMemo(()=>items.filter(i=>{
     const mq=i.name.toLowerCase().includes(q.toLowerCase())||i.code.toLowerCase().includes(q.toLowerCase());
     const mc=!catF||i.category===catF;
-    const ms=!statusF||i.status===statusF;
     const mw=!whF||i.whId===whF;
-    return mq&&mc&&ms&&mw;
-  }),[items,q,catF,statusF,whF]);
+    return mq&&mc&&mw;
+  }),[items,q,catF,whF]);
 
-  const add=()=>setModal(React.createElement(ItemForm,{onClose:()=>setModal(null),onSave:d=>{
-    const item=itemSvc.create({...d,costPrice:Number(d.costPrice),minStock:Number(d.minStock),whId:whF||whId||whs[0]?.id});
-    stockSvc.setQty(item.id,item.whId||whF||whId||whs[0]?.id,0);
-    toast('Item created','success');reloadItems();setModal(null);
-  }}));
-
-  const edit=item=>setModal(React.createElement(ItemForm,{initial:item,onClose:()=>setModal(null),onSave:d=>{
-    itemSvc.update(item.id,{...d,costPrice:Number(d.costPrice),minStock:Number(d.minStock)});
-    toast('Item updated','success');reloadItems();setModal(null);
-  }}));
-
-  const del=item=>setModal(React.createElement(Confirm,{title:'Delete Item',text:`Delete "${item.name}" (${item.code})?`,onCancel:()=>setModal(null),onOk:()=>{itemSvc.delete(item.id);toast('Deleted','success');reloadItems();setModal(null);}}));
+  // ── DETAIL VIEW ──
+  if(detail){
+    const item=detail;
+    const rack=rackSvc.getAll(null).find(r=>r.id===item.rackId);
+    const wh=whSvc.getById(item.whId);
+    const qty=stockSvc.getQty(item.id,item.whId);
+    const low=qty<=item.minStock;
+    const cat=CATS.find(c=>c.id===item.category);
+    const itemGRV=grvSvc.getAll(null).filter(g=>g.status==='Approved'&&(g.items||[]).some(r=>r.itemId===item.id));
+    const itemGIV=givSvc.getAll(null).filter(g=>g.status==='Approved'&&(g.items||[]).some(r=>r.itemId===item.id));
+    const totalIn=itemGRV.reduce((s,g)=>s+((g.items||[]).find(r=>r.itemId===item.id)?.qtyReceived||0)*1,0);
+    const totalOut=itemGIV.reduce((s,g)=>s+((g.items||[]).find(r=>r.itemId===item.id)?.qtyIssued||0)*1,0);
+    return React.createElement('div',null,
+      React.createElement('div',{onClick:()=>setDetail(null),style:{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'var(--blue)',cursor:'pointer',marginBottom:14,padding:'5px 14px',background:'var(--blue-light)',borderRadius:6,border:'1px solid var(--blue-mid)'}},React.createElement(Ic,{n:'back',s:13}),' Back to Items'),
+      React.createElement('div',{className:'ph'},
+        React.createElement('div',{className:'ph-l'},
+          React.createElement('h1',null,cat?.icon||'📦',' ',item.name),
+          React.createElement('p',null,'Item Code: ',React.createElement('strong',null,item.code),' · ',wh?.name||'-')
+        ),
+        React.createElement('div',{className:'ph-r'},
+          React.createElement('button',{className:'btn btn-outline btn-sm',onClick:()=>setModal(React.createElement(ItemForm,{initial:item,onClose:()=>setModal(null),onSave:d=>{itemSvc.update(item.id,{...d,costPrice:Number(d.costPrice),minStock:Number(d.minStock)});toast('Updated','success');reloadItems();setModal(null);setDetail({...item,...d,costPrice:Number(d.costPrice),minStock:Number(d.minStock)});}}))},React.createElement(Ic,{n:'edit',s:13}),' Edit')
+        )
+      ),
+      // Stats row
+      React.createElement('div',{className:'grid g4',style:{marginBottom:14}},
+        [
+          {l:'Current Stock',v:String(qty)+' '+item.unit,c:low?'var(--red)':'var(--green)',ico:low?'⚠️':'✅'},
+          {l:'Total Received',v:String(totalIn)+' '+item.unit,c:'var(--blue)',ico:'📥'},
+          {l:'Total Issued',v:String(totalOut)+' '+item.unit,c:'var(--amber)',ico:'📤'},
+          {l:'Stock Value',v:sym+' '+fmt(qty*Number(item.costPrice||0),0),c:'var(--green)',ico:'💰'},
+        ].map(k=>React.createElement('div',{key:k.l,className:'card',style:{display:'flex',alignItems:'center',gap:10,borderLeft:'3px solid '+k.c,padding:'12px 14px'}},
+          React.createElement('div',{style:{fontSize:20}},k.ico),
+          React.createElement('div',null,React.createElement('div',{style:{fontSize:17,fontWeight:800,color:k.c}},k.v),React.createElement('div',{style:{fontSize:11,color:'var(--txt2)'}},k.l))
+        ))
+      ),
+      // Info card
+      React.createElement('div',{className:'grid g2',style:{marginBottom:14}},
+        React.createElement('div',{className:'card'},
+          React.createElement('div',{className:'card-hd'},React.createElement('span',{className:'card-t'},'Item Details')),
+          React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,fontSize:13}},
+            [['Category',React.createElement(CatBadge,{catId:item.category})],['Unit',item.unit],['Rack',rack?React.createElement('span',{style:{color:'var(--blue)',fontFamily:'var(--mono)',fontWeight:600}},rack.code):'-'],['Warehouse',wh?.name||'-'],['Cost Price',sym+' '+fmt(item.costPrice)],['Min Stock',item.minStock+' '+item.unit],['Status',React.createElement('span',{className:'sdot '+(item.status==='Active'?'active':'inactive')},item.status)],['Description',item.description||'-']]
+            .map(([l,v])=>React.createElement('div',{key:l},React.createElement('div',{style:{fontSize:10,color:'var(--txt3)',marginBottom:2,textTransform:'uppercase',letterSpacing:'.4px'}},l),React.createElement('div',{style:{fontWeight:600}},v)))
+          )
+        ),
+        React.createElement('div',{className:'card'},
+          React.createElement('div',{className:'card-hd'},React.createElement('span',{className:'card-t'},'Stock Bar')),
+          React.createElement('div',{style:{textAlign:'center',padding:'20px 0'}},
+            React.createElement('div',{style:{fontSize:48,fontWeight:900,color:low?'var(--red)':'var(--green)',letterSpacing:'-2px'}},qty),
+            React.createElement('div',{style:{fontSize:13,color:'var(--txt2)',marginBottom:12}},item.unit+' in stock'),
+            React.createElement('div',{style:{background:'var(--off2)',borderRadius:10,height:12,overflow:'hidden',marginBottom:6}},
+              React.createElement('div',{style:{height:'100%',borderRadius:10,background:low?'var(--red)':'var(--green)',width:Math.min(100,Math.round(qty/Math.max(item.minStock,1)*50))+'%',transition:'width .5s'}})
+            ),
+            React.createElement('div',{style:{fontSize:11,color:'var(--txt3)'}},low?'⚠️ Below minimum ('+item.minStock+' '+item.unit+')':'✅ Above minimum ('+item.minStock+' '+item.unit+')')
+          )
+        )
+      ),
+      // GRV history
+      React.createElement('div',{className:'card',style:{marginBottom:12}},
+        React.createElement('div',{className:'card-hd'},React.createElement('span',{className:'card-t'},'📥 Receipt History (GRV) — '+itemGRV.length+' transactions')),
+        itemGRV.length===0
+          ? React.createElement('div',{style:{padding:'20px',textAlign:'center',color:'var(--txt3)'}},'\u2014 No receipts yet \u2014')
+          : React.createElement('div',{className:'tw',style:{border:'none',boxShadow:'none'}},
+            React.createElement('table',null,
+              React.createElement('thead',null,React.createElement('tr',null,['GRV No.','Date','Supplier','Qty Received','Rate','Amount','Approved By'].map(h=>React.createElement('th',{key:h},h)))),
+              React.createElement('tbody',null,
+                itemGRV.map(g=>{
+                  const row=(g.items||[]).find(r=>r.itemId===item.id)||{};
+                  return React.createElement('tr',{key:g.id},
+                    React.createElement('td',null,React.createElement('span',{style:{color:'var(--blue)',fontWeight:700,fontFamily:'var(--mono)',fontSize:11}},g.grvNo)),
+                    React.createElement('td',null,fmtDate(g.date)),
+                    React.createElement('td',null,g.supplierName||'-'),
+                    React.createElement('td',null,React.createElement('span',{style:{fontWeight:700,color:'var(--green)'}},'+'+String(row.qtyReceived||0),' ',item.unit)),
+                    React.createElement('td',null,sym+' '+fmt(row.rate||0)),
+                    React.createElement('td',null,sym+' '+fmt((row.qtyReceived||0)*(row.rate||0),0)),
+                    React.createElement('td',null,g.approvedBy||'-')
+                  );
+                })
+              )
+            )
+          )
+      ),
+      // GIV history
+      React.createElement('div',{className:'card'},
+        React.createElement('div',{className:'card-hd'},React.createElement('span',{className:'card-t'},'📤 Issue History (GIV) — '+itemGIV.length+' transactions')),
+        itemGIV.length===0
+          ? React.createElement('div',{style:{padding:'20px',textAlign:'center',color:'var(--txt3)'}},'\u2014 No issues yet \u2014')
+          : React.createElement('div',{className:'tw',style:{border:'none',boxShadow:'none'}},
+            React.createElement('table',null,
+              React.createElement('thead',null,React.createElement('tr',null,['GIV No.','Date','Issued To','Qty Issued','Purpose','Approved By'].map(h=>React.createElement('th',{key:h},h)))),
+              React.createElement('tbody',null,
+                itemGIV.map(g=>{
+                  const row=(g.items||[]).find(r=>r.itemId===item.id)||{};
+                  return React.createElement('tr',{key:g.id},
+                    React.createElement('td',null,React.createElement('span',{style:{color:'var(--amber)',fontWeight:700,fontFamily:'var(--mono)',fontSize:11}},g.givNo)),
+                    React.createElement('td',null,fmtDate(g.date)),
+                    React.createElement('td',null,g.issuedTo||'-'),
+                    React.createElement('td',null,React.createElement('span',{style:{fontWeight:700,color:'var(--red)'}},'-'+String(row.qtyIssued||0),' ',item.unit)),
+                    React.createElement('td',null,g.purpose||'-'),
+                    React.createElement('td',null,g.approvedBy||'-')
+                  );
+                })
+              )
+            )
+          )
+      )
+    );
+  }
 
   return React.createElement('div',null,
     React.createElement('div',{className:'ph'},
-      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Item Master'),React.createElement('p',null,`${items.length} total items`)),
-      React.createElement('div',{className:'ph-r'},React.createElement('button',{className:'btn btn-primary',onClick:add},React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' Add Item'))
-    ),
-    React.createElement('div',{className:'sb'},
-      React.createElement('div',{className:'si'},React.createElement('div',{className:'si-ico'},React.createElement(Ic,{n:'search',s:13,c:'var(--txt3)'})),React.createElement('input',{placeholder:'Search by Name / Code...',value:q,onChange:e=>setQ(e.target.value)})),
-      React.createElement('select',{className:'fs',value:catF,onChange:e=>setCatF(e.target.value)},
-        React.createElement('option',{value:''},'All Categories'),
-        CATS.map(c=>React.createElement('option',{key:c.id,value:c.id},c.name))
-      ),
-      React.createElement('select',{className:'fs',value:statusF,onChange:e=>setStatusF(e.target.value)},
-        React.createElement('option',{value:''},'All Status'),
-        ['Active','Inactive'].map(v=>React.createElement('option',{key:v,value:v},v))
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Item Master'),React.createElement('p',null,String(filtered.length)+' items'+(isSA?' across all warehouses':' in '+(whSvc.getById(whId)?.name||'')))),
+      React.createElement('div',{className:'ph-r'},
+        React.createElement('button',{className:'btn btn-primary',onClick:()=>setModal(React.createElement(ItemForm,{onClose:()=>setModal(null),onSave:d=>{const item=itemSvc.create({...d,costPrice:Number(d.costPrice),minStock:Number(d.minStock),whId:whF||whId||whs[0]?.id});stockSvc.setQty(item.id,item.whId||whF||whId||whs[0]?.id,0);toast('Item created','success');reloadItems();setModal(null);}}))},React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' Add Item')
       )
+    ),
+    React.createElement('div',{className:'sb-bar'},
+      React.createElement('div',{className:'si'},React.createElement('div',{className:'si-ico'},React.createElement(Ic,{n:'search',s:13,c:'var(--txt3)'})),React.createElement('input',{placeholder:'Search name / code...',value:q,onChange:e=>setQ(e.target.value)})),
+      React.createElement('select',{className:'fs',value:catF,onChange:e=>setCatF(e.target.value)},React.createElement('option',{value:''},'All Categories'),CATS.map(c=>React.createElement('option',{key:c.id,value:c.id},c.name))),
+      isSA&&React.createElement('select',{className:'fs',value:whF,onChange:e=>{setWhF(e.target.value);setItems(itemSvc.getAll(e.target.value||null));}},React.createElement('option',{value:''},'All Warehouses'),whs.map(w=>React.createElement('option',{key:w.id,value:w.id},w.name)))
     ),
     React.createElement('div',{className:'tw'},
       React.createElement('table',null,
         React.createElement('thead',null,React.createElement('tr',null,
-          ['Item Code','Item Name','Category','Rack No.','UOM','Current Stock','Min. Stock','Rate ('+sym+')','Status','Actions'].map(h=>React.createElement('th',{key:h},h))
+          ['Code','Item Name','Category',isSA&&'Warehouse','Rack','Unit','Stock','Min','Rate','Status',''].filter(Boolean).map(h=>React.createElement('th',{key:h},h))
         )),
         React.createElement('tbody',null,
           filtered.length===0
-            ? React.createElement('tr',null,React.createElement('td',{colSpan:10},React.createElement('div',{className:'te'},'No items found')))
+            ? React.createElement('tr',null,React.createElement('td',{colSpan:11},React.createElement('div',{className:'te'},'No items found')))
             : filtered.map(item=>{
-              const qty=stockSvc.getQty(item.id,item.whId);
               const rack=racks.find(r=>r.id===item.rackId);
+              const qty=stockSvc.getQty(item.id,item.whId);
               const low=qty<=item.minStock;
-              return React.createElement('tr',{key:item.id},
-                React.createElement('td',null,React.createElement('span',{className:'mono',style:{fontWeight:600}},item.code)),
-                React.createElement('td',null,React.createElement('div',{style:{fontWeight:600}},item.name),item.description&&React.createElement('div',{style:{fontSize:10,color:'var(--txt3)'}},item.description)),
+              return React.createElement('tr',{key:item.id,style:{cursor:'pointer'},
+                onClick:()=>setDetail(item)},
+                React.createElement('td',null,React.createElement('span',{style:{fontFamily:'var(--mono)',fontWeight:600,fontSize:11,color:'var(--blue)'}},item.code)),
+                React.createElement('td',null,React.createElement('div',{style:{fontWeight:600}},item.name)),
                 React.createElement('td',null,React.createElement(CatBadge,{catId:item.category})),
-                React.createElement('td',null,rack?React.createElement('span',{className:'mono',style:{color:'var(--blue)'}},rack.code):'-'),
+                isSA&&React.createElement('td',null,React.createElement(WhBadge,{whId:item.whId})),
+                React.createElement('td',null,rack?React.createElement('span',{style:{color:'var(--blue)',fontFamily:'var(--mono)',fontSize:11}},rack.code):'-'),
                 React.createElement('td',null,item.unit),
-                React.createElement('td',null,React.createElement('span',{style:{fontWeight:700,color:low?'var(--red)':'var(--green)',fontSize:14}},qty,' ',item.unit),low&&React.createElement('div',{style:{fontSize:9,color:'var(--red)',fontWeight:600}},`Min: ${item.minStock}`)),
-                React.createElement('td',null,item.minStock,' ',item.unit),
+                React.createElement('td',null,React.createElement('span',{style:{fontWeight:700,color:low?'var(--red)':'var(--green)'}},String(qty),' ',item.unit)),
+                React.createElement('td',null,String(item.minStock)),
                 React.createElement('td',null,sym+' '+fmt(item.costPrice)),
-                React.createElement('td',null,React.createElement('span',{className:`sdot ${item.status==='Active'?'active':'inactive'}`},item.status)),
-                React.createElement('td',null,React.createElement('div',{style:{display:'flex',gap:5}},
-                  React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>edit(item),title:'Edit'},React.createElement(Ic,{n:'edit',s:13})),
-                  React.createElement('button',{className:'btn btn-danger btn-sm btn-icon',onClick:()=>del(item),title:'Delete'},React.createElement(Ic,{n:'trash',s:13}))
+                React.createElement('td',null,React.createElement('span',{className:'sdot '+(item.status==='Active'?'active':'inactive')},item.status)),
+                React.createElement('td',{onClick:e=>e.stopPropagation()},React.createElement('div',{style:{display:'flex',gap:4}},
+                  React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>setModal(React.createElement(ItemForm,{initial:item,onClose:()=>setModal(null),onSave:d=>{itemSvc.update(item.id,{...d,costPrice:Number(d.costPrice),minStock:Number(d.minStock)});toast('Updated','success');reloadItems();setModal(null);}}))},React.createElement(Ic,{n:'edit',s:12})),
+                  React.createElement('button',{className:'btn btn-danger btn-sm btn-icon',onClick:()=>setModal(React.createElement(Confirm,{title:'Delete Item',text:'Delete "'+item.name+'"?',onCancel:()=>setModal(null),onOk:()=>{itemSvc.delete(item.id);toast('Deleted','success');reloadItems();setModal(null);}}))},React.createElement(Ic,{n:'trash',s:12}))
                 ))
               );
             })
         )
       )
-    )
+    ),
+    React.createElement('div',{style:{marginTop:8,fontSize:11,color:'var(--txt3)',textAlign:'center'}},'💡 Click any row to view full item detail & transaction history')
   );
 }
 
 // ════════════════════════════════════════
-//  RACK MANAGEMENT
+//  RACK MANAGEMENT — with click-to-detail
 // ════════════════════════════════════════
 function Racks(){
   const {toast,setModal,reload,whId,isSA}=useCtx();
   const whs=whSvc.getAll();
   const [selWh,setSelWh]=useState(whId||whs[0]?.id||'');
   const [racks,setRacks]=useState(rackSvc.getAll(whId));
-  const items=itemSvc.getAll(whId);
+  const [detail,setDetail]=useState(null);
+  const sym=settSvc.get().currencySymbol||'QR';
   const reloadRacks=()=>{setRacks(rackSvc.getAll(selWh||null));reload();};
 
   const RackForm=({initial,onSave,onClose})=>{
-    const [f,setF]=useState(initial||{code:'',name:'',category:'MECH',description:'',capacity:500,status:'Active'});
+    const [f,setF]=useState(initial||{code:'',name:'',whId:selWh||whId||whs[0]?.id||'',category:'MECH',description:'',capacity:500,status:'Active'});
     const [e,setE]=useState({});
     const s=(k,v)=>setF(p=>({...p,[k]:v}));
-    const save=()=>{
-      const err={};if(!f.code)err.code='Required';if(!f.name)err.name='Required';
-      if(Object.keys(err).length){setE(err);return;}onSave(f);
-    };
+    const save=()=>{const err={};if(!f.code)err.code='Required';if(!f.name)err.name='Required';if(Object.keys(err).length){setE(err);return;}onSave(f);};
     return React.createElement(Modal,{title:initial?'Edit Rack':'Add New Rack',onClose,size:'sm'},
       React.createElement('div',{className:'frow'},
         React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Rack Code *'),React.createElement('input',{className:'fi',value:f.code,onChange:ev=>s('code',ev.target.value),placeholder:'e.g. R-01-01'}),e.code&&React.createElement('div',{className:'fe'},e.code)),
-        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Rack Name *'),React.createElement('input',{className:'fi',value:f.name,onChange:ev=>s('name',ev.target.value),placeholder:'e.g. Rack 01 - Row A'}),e.name&&React.createElement('div',{className:'fe'},e.name))
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Rack Name *'),React.createElement('input',{className:'fi',value:f.name,onChange:ev=>s('name',ev.target.value)}),e.name&&React.createElement('div',{className:'fe'},e.name))
       ),
       React.createElement('div',{className:'frow'},
-        React.createElement('div',{className:'fg'},
-          React.createElement('label',{className:'flbl'},'Category'),
-          React.createElement('select',{className:'fi',value:f.category,onChange:ev=>s('category',ev.target.value)},
-            React.createElement('option',{value:''},'Mixed / All'),
-            CATS.map(c=>React.createElement('option',{key:c.id,value:c.id},c.name))
-          )
-        ),
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Warehouse'),React.createElement('select',{className:'fi',value:f.whId,onChange:ev=>s('whId',ev.target.value),disabled:!isSA&&!!whId},whs.map(w=>React.createElement('option',{key:w.id,value:w.id},w.name)))),
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Category'),React.createElement('select',{className:'fi',value:f.category,onChange:ev=>s('category',ev.target.value)},React.createElement('option',{value:''},'Mixed / All'),CATS.map(c=>React.createElement('option',{key:c.id,value:c.id},c.name))))
+      ),
+      React.createElement('div',{className:'frow'},
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Description'),React.createElement('input',{className:'fi',value:f.description||'',onChange:ev=>s('description',ev.target.value)})),
         React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Max Capacity'),React.createElement('input',{className:'fi',type:'number',min:0,value:f.capacity,onChange:ev=>s('capacity',ev.target.value)}))
       ),
-      React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Description'),React.createElement('input',{className:'fi',value:f.description||'',onChange:ev=>s('description',ev.target.value),placeholder:'What items are stored here'})),
-      React.createElement('div',{className:'fg'},
-        React.createElement('label',{className:'flbl'},'Status'),
-        React.createElement('select',{className:'fi',value:f.status,onChange:ev=>s('status',ev.target.value)},
-          ['Active','Inactive'].map(v=>React.createElement('option',{key:v,value:v},v))
-        )
-      ),
+      React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Status'),React.createElement('select',{className:'fi',value:f.status,onChange:ev=>s('status',ev.target.value)},['Active','Inactive'].map(v=>React.createElement('option',{key:v,value:v},v)))),
       null,
       React.createElement('div',{style:{display:'flex',gap:8,justifyContent:'flex-end',marginTop:4}},
         React.createElement('button',{className:'btn btn-outline',onClick:onClose},'Cancel'),
@@ -1860,59 +1946,158 @@ function Racks(){
     );
   };
 
+  const allItems=itemSvc.getAll(selWh||null);
   const rackStats=racks.map(r=>{
-    const rItems=items.filter(i=>i.rackId===r.id);
-    const totalQty=rItems.reduce((s,i)=>s+stockSvc.getQty(i.id),0);
+    const rItems=allItems.filter(i=>i.rackId===r.id);
+    const totalQty=rItems.reduce((s,i)=>s+stockSvc.getQty(i.id,i.whId),0);
+    const totalVal=rItems.reduce((s,i)=>s+stockSvc.getQty(i.id,i.whId)*Number(i.costPrice||0),0);
     const utilPct=r.capacity>0?Math.min(100,Math.round((totalQty/r.capacity)*100)):0;
-    return{...r,itemCount:rItems.length,totalQty,utilPct};
+    const wh=whSvc.getById(r.whId);
+    return{...r,itemCount:rItems.length,totalQty,totalVal,utilPct,whName:wh?.name||'-',items:rItems};
   });
+
+  // ── RACK DETAIL VIEW ──
+  if(detail){
+    const rack=rackStats.find(r=>r.id===detail.id)||detail;
+    const rackItems=rack.items||allItems.filter(i=>i.rackId===rack.id);
+    const cat=CATS.find(c=>c.id===rack.category);
+    return React.createElement('div',null,
+      React.createElement('div',{onClick:()=>setDetail(null),style:{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'var(--blue)',cursor:'pointer',marginBottom:14,padding:'5px 14px',background:'var(--blue-light)',borderRadius:6,border:'1px solid var(--blue-mid)'}},React.createElement(Ic,{n:'back',s:13}),' Back to Racks'),
+      React.createElement('div',{className:'ph'},
+        React.createElement('div',{className:'ph-l'},
+          React.createElement('h1',null,'🗄️ ',rack.code,' — ',rack.name),
+          React.createElement('p',null,rack.whName,' · ',rack.description||'No description')
+        ),
+        React.createElement('div',{className:'ph-r'},
+          React.createElement('button',{className:'btn btn-outline btn-sm',onClick:()=>setModal(React.createElement(RackForm,{initial:rack,onClose:()=>setModal(null),onSave:d=>{rackSvc.update(rack.id,{...d,capacity:Number(d.capacity)});toast('Updated','success');reloadRacks();setModal(null);setDetail({...rack,...d});}}))},'✏️ Edit'),
+          React.createElement('button',{className:'btn btn-danger btn-sm',onClick:()=>setModal(React.createElement(Confirm,{title:'Delete Rack',text:'Delete "'+rack.code+'"?',onCancel:()=>setModal(null),onOk:()=>{rackSvc.delete(rack.id);toast('Deleted','success');reloadRacks();setDetail(null);setModal(null);}}))},'🗑️ Delete')
+        )
+      ),
+      // Stats
+      React.createElement('div',{className:'grid g4',style:{marginBottom:14}},
+        [
+          {l:'Total Items',v:String(rack.itemCount||rackItems.length),c:'var(--blue)',ico:'📦'},
+          {l:'Total Quantity',v:String(rack.totalQty||0),c:'var(--navy)',ico:'📊'},
+          {l:'Stock Value',v:sym+' '+fmt(rack.totalVal||0,0),c:'var(--green)',ico:'💰'},
+          {l:'Utilization',v:String(rack.utilPct||0)+'%',c:rack.utilPct>85?'var(--red)':rack.utilPct>60?'var(--amber)':'var(--green)',ico:'📈'},
+        ].map(k=>React.createElement('div',{key:k.l,className:'card',style:{display:'flex',alignItems:'center',gap:10,borderLeft:'3px solid '+k.c,padding:'12px 14px'}},
+          React.createElement('div',{style:{fontSize:20}},k.ico),
+          React.createElement('div',null,React.createElement('div',{style:{fontSize:17,fontWeight:800,color:k.c}},k.v),React.createElement('div',{style:{fontSize:11,color:'var(--txt2)'}},k.l))
+        ))
+      ),
+      // Info + utilization bar
+      React.createElement('div',{className:'grid g2',style:{marginBottom:14}},
+        React.createElement('div',{className:'card'},
+          React.createElement('div',{className:'card-hd'},React.createElement('span',{className:'card-t'},'Rack Info')),
+          React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,fontSize:13}},
+            [['Rack Code',React.createElement('span',{style:{fontFamily:'var(--mono)',fontWeight:700,color:'var(--blue)'}},rack.code)],['Rack Name',rack.name],['Warehouse',rack.whName],['Category',cat?React.createElement(CatBadge,{catId:cat.id}):React.createElement(Badge,{c:'gray'},'Mixed')],['Max Capacity',rack.capacity+' NOS'],['Status',React.createElement('span',{className:'sdot '+(rack.status==='Active'?'active':'inactive')},rack.status)]]
+            .map(([l,v])=>React.createElement('div',{key:l},React.createElement('div',{style:{fontSize:10,color:'var(--txt3)',marginBottom:2,textTransform:'uppercase',letterSpacing:'.4px'}},l),React.createElement('div',{style:{fontWeight:600}},v)))
+          )
+        ),
+        React.createElement('div',{className:'card'},
+          React.createElement('div',{className:'card-hd'},React.createElement('span',{className:'card-t'},'Capacity Utilization')),
+          React.createElement('div',{style:{padding:'10px 0'}},
+            React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:8,fontSize:12}},
+              React.createElement('span',{style:{color:'var(--txt2)'}},'Used: '+(rack.totalQty||0)+' NOS'),
+              React.createElement('span',{style:{fontWeight:700,color:rack.utilPct>85?'var(--red)':rack.utilPct>60?'var(--amber)':'var(--green)'}},(rack.utilPct||0)+'%')
+            ),
+            React.createElement('div',{style:{background:'var(--off2)',borderRadius:8,height:16,overflow:'hidden',marginBottom:8}},
+              React.createElement('div',{style:{height:'100%',borderRadius:8,background:rack.utilPct>85?'var(--red)':rack.utilPct>60?'var(--amber)':'var(--green)',width:(rack.utilPct||0)+'%',transition:'width .6s'}})
+            ),
+            React.createElement('div',{style:{fontSize:11,color:'var(--txt3)'}},
+              'Capacity: '+(rack.capacity||0)+' NOS · Items: '+(rack.itemCount||rackItems.length)+' types'
+            )
+          )
+        )
+      ),
+      // Items in this rack
+      React.createElement('div',{className:'card'},
+        React.createElement('div',{className:'card-hd'},
+          React.createElement('span',{className:'card-t'},'Items Stored in This Rack'),
+          React.createElement('span',{style:{fontSize:11,color:'var(--txt3)'}},String(rackItems.length)+' item types')
+        ),
+        rackItems.length===0
+          ? React.createElement('div',{style:{padding:'32px',textAlign:'center',color:'var(--txt3)'}},React.createElement('div',{style:{fontSize:32,marginBottom:8}},'📭'),React.createElement('div',null,'This rack is empty'))
+          : React.createElement('div',{className:'tw',style:{border:'none',boxShadow:'none'}},
+            React.createElement('table',null,
+              React.createElement('thead',null,React.createElement('tr',null,['#','Code','Item Name','Category','Unit','Current Stock','Min Stock','Rate','Value','Status'].map(h=>React.createElement('th',{key:h},h)))),
+              React.createElement('tbody',null,
+                rackItems.map((item,idx)=>{
+                  const qty=stockSvc.getQty(item.id,item.whId);
+                  const low=qty<=item.minStock;
+                  return React.createElement('tr',{key:item.id},
+                    React.createElement('td',null,String(idx+1)),
+                    React.createElement('td',null,React.createElement('span',{style:{fontFamily:'var(--mono)',fontWeight:600,fontSize:11,color:'var(--blue)'}},item.code)),
+                    React.createElement('td',null,React.createElement('span',{style:{fontWeight:600}},item.name)),
+                    React.createElement('td',null,React.createElement(CatBadge,{catId:item.category})),
+                    React.createElement('td',null,item.unit),
+                    React.createElement('td',null,React.createElement('span',{style:{fontWeight:800,fontSize:14,color:low?'var(--red)':'var(--green)'}},String(qty),' ',item.unit)),
+                    React.createElement('td',null,String(item.minStock),' ',item.unit),
+                    React.createElement('td',null,sym+' '+fmt(item.costPrice)),
+                    React.createElement('td',null,React.createElement('strong',{style:{color:'var(--green)'}},sym+' '+fmt(qty*Number(item.costPrice||0),0))),
+                    React.createElement('td',null,React.createElement('span',{className:'sdot '+(low?'low':'normal')},low?'Low':'Normal'))
+                  );
+                })
+              )
+            )
+          )
+      )
+    );
+  }
 
   return React.createElement('div',null,
     React.createElement('div',{className:'ph'},
-      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Rack Management'),React.createElement('p',null,'Single warehouse — rack-wise storage tracking')),
-      React.createElement('div',{className:'ph-r'},React.createElement('button',{className:'btn btn-primary',onClick:()=>setModal(React.createElement(RackForm,{onClose:()=>setModal(null),onSave:d=>{rackSvc.create({...d,capacity:Number(d.capacity)});toast('Rack added','success');reloadRacks();setModal(null);}}))},React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' Add Rack'))
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Rack Management'),React.createElement('p',null,'Click any rack to see all items stored in it')),
+      React.createElement('div',{className:'ph-r'},
+        isSA&&React.createElement('select',{className:'fs',style:{marginRight:8},value:selWh,onChange:e=>{setSelWh(e.target.value);setRacks(rackSvc.getAll(e.target.value||null));}},whs.map(w=>React.createElement('option',{key:w.id,value:w.id},w.name))),
+        React.createElement('button',{className:'btn btn-primary',onClick:()=>setModal(React.createElement(RackForm,{onClose:()=>setModal(null),onSave:d=>{rackSvc.create({...d,whId:d.whId||selWh||whId,capacity:Number(d.capacity)});toast('Rack added','success');reloadRacks();setModal(null);}}))},React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' Add Rack')
+      )
     ),
     React.createElement('div',{className:'tw'},
       React.createElement('table',null,
         React.createElement('thead',null,React.createElement('tr',null,
-          ['Rack / Location Code','Rack / Location Name','Category','Description','Capacity','Items','Utilization','Status','Action'].map(h=>React.createElement('th',{key:h},h))
+          ['Rack Code','Rack Name',isSA&&'Warehouse','Category','Description','Capacity','Items','Utilization','Status',''].filter(Boolean).map(h=>React.createElement('th',{key:h},h))
         )),
         React.createElement('tbody',null,
           rackStats.length===0
-            ? React.createElement('tr',null,React.createElement('td',{colSpan:9},React.createElement('div',{className:'te'},'No racks defined')))
-            : rackStats.map(rack=>React.createElement('tr',{key:rack.id},
+            ? React.createElement('tr',null,React.createElement('td',{colSpan:10},React.createElement('div',{className:'te'},'No racks defined yet')))
+            : rackStats.map(rack=>React.createElement('tr',{key:rack.id,style:{cursor:'pointer'},onClick:()=>setDetail(rack)},
               React.createElement('td',null,React.createElement('span',{style:{color:'var(--blue)',fontWeight:700,fontFamily:'var(--mono)'}},rack.code)),
               React.createElement('td',null,React.createElement('span',{style:{fontWeight:600}},rack.name)),
+              isSA&&React.createElement('td',null,React.createElement(WhBadge,{whId:rack.whId})),
               React.createElement('td',null,rack.category?React.createElement(CatBadge,{catId:rack.category}):React.createElement(Badge,{c:'gray'},'Mixed')),
               React.createElement('td',null,React.createElement('span',{style:{fontSize:12,color:'var(--txt2)'}},rack.description||'-')),
-              React.createElement('td',null,rack.capacity,' NOS'),
-              React.createElement('td',null,React.createElement('strong',null,rack.itemCount),' items'),
+              React.createElement('td',null,String(rack.capacity),' NOS'),
+              React.createElement('td',null,React.createElement('strong',null,String(rack.itemCount)),' items'),
               React.createElement('td',null,
                 React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8}},
                   React.createElement('div',{className:'sbar',style:{width:80}},
-                    React.createElement('div',{className:'sbar-f',style:{width:`${rack.utilPct}%`,background:rack.utilPct>85?'var(--red)':rack.utilPct>60?'var(--amber)':'var(--green)'}})
+                    React.createElement('div',{className:'sbar-f',style:{width:rack.utilPct+'%',background:rack.utilPct>85?'var(--red)':rack.utilPct>60?'var(--amber)':'var(--green)'}})
                   ),
                   React.createElement('span',{style:{fontSize:11,fontFamily:'var(--mono)',color:'var(--txt2)'}},rack.utilPct+'%')
                 )
               ),
-              React.createElement('td',null,React.createElement('span',{className:`sdot ${rack.status==='Active'?'active':'inactive'}`},rack.status)),
-              React.createElement('td',null,React.createElement('div',{style:{display:'flex',gap:5}},
+              React.createElement('td',null,React.createElement('span',{className:'sdot '+(rack.status==='Active'?'active':'inactive')},rack.status)),
+              React.createElement('td',{onClick:e=>e.stopPropagation()},React.createElement('div',{style:{display:'flex',gap:5}},
                 React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>setModal(React.createElement(RackForm,{initial:rack,onClose:()=>setModal(null),onSave:d=>{rackSvc.update(rack.id,{...d,capacity:Number(d.capacity)});toast('Updated','success');reloadRacks();setModal(null);}}))},React.createElement(Ic,{n:'edit',s:13})),
-                React.createElement('button',{className:'btn btn-danger btn-sm btn-icon',onClick:()=>setModal(React.createElement(Confirm,{title:'Delete Rack',text:`Delete rack "${rack.code}"?`,onCancel:()=>setModal(null),onOk:()=>{rackSvc.delete(rack.id);toast('Deleted','success');reloadRacks();setModal(null);}}))},React.createElement(Ic,{n:'trash',s:13}))
+                React.createElement('button',{className:'btn btn-danger btn-sm btn-icon',onClick:()=>setModal(React.createElement(Confirm,{title:'Delete Rack',text:'Delete "'+rack.code+'"?',onCancel:()=>setModal(null),onOk:()=>{rackSvc.delete(rack.id);toast('Deleted','success');reloadRacks();setModal(null);}}))},React.createElement(Ic,{n:'trash',s:13}))
               ))
             ))
         )
       )
-    )
+    ),
+    React.createElement('div',{style:{marginTop:8,fontSize:11,color:'var(--txt3)',textAlign:'center'}},'💡 Click any row to view all items stored in that rack')
   );
 }
 
 // ════════════════════════════════════════
-//  SUPPLIER MASTER
+//  SUPPLIER MASTER — with click-to-detail
 // ════════════════════════════════════════
 function Suppliers(){
-  const {toast,setModal,reload}=useCtx();
+  const {toast,setModal,reload,whId}=useCtx();
   const [sups,setSups]=useState(supplierSvc.getAll());
+  const [detail,setDetail]=useState(null);
+  const sym=settSvc.get().currencySymbol||'QR';
   const reloadSups=()=>{setSups(supplierSvc.getAll());reload();};
 
   const SupForm=({initial,onSave,onClose})=>{
@@ -1939,32 +2124,95 @@ function Suppliers(){
     );
   };
 
+  // ── SUPPLIER DETAIL VIEW ──
+  if(detail){
+    const sup=detail;
+    const supGRVs=grvSvc.getAll(null).filter(g=>g.supplierId===sup.id||g.supplierName===sup.name);
+    const totalAmt=supGRVs.filter(g=>g.status==='Approved').reduce((s,g)=>s+Number(g.totalAmount||0),0);
+    const totalItems=supGRVs.filter(g=>g.status==='Approved').reduce((s,g)=>s+(g.totalQty||0),0);
+    return React.createElement('div',null,
+      React.createElement('div',{onClick:()=>setDetail(null),style:{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'var(--blue)',cursor:'pointer',marginBottom:14,padding:'5px 14px',background:'var(--blue-light)',borderRadius:6,border:'1px solid var(--blue-mid)'}},React.createElement(Ic,{n:'back',s:13}),' Back to Suppliers'),
+      React.createElement('div',{className:'ph'},
+        React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'🏢 ',sup.name),React.createElement('p',null,'Supplier Detail & Transaction History')),
+        React.createElement('div',{className:'ph-r'},
+          React.createElement('button',{className:'btn btn-outline btn-sm',onClick:()=>setModal(React.createElement(SupForm,{initial:sup,onClose:()=>setModal(null),onSave:d=>{supplierSvc.update(sup.id,d);toast('Updated','success');reloadSups();setModal(null);setDetail({...sup,...d});}}))},'✏️ Edit'),
+          React.createElement('button',{className:'btn btn-danger btn-sm',onClick:()=>setModal(React.createElement(Confirm,{title:'Delete Supplier',text:'Delete "'+sup.name+'"?',onCancel:()=>setModal(null),onOk:()=>{supplierSvc.delete(sup.id);toast('Deleted','success');reloadSups();setDetail(null);setModal(null);}}))},'🗑️ Delete')
+        )
+      ),
+      React.createElement('div',{className:'grid g4',style:{marginBottom:14}},
+        [
+          {l:'Total GRVs',v:String(supGRVs.length),c:'var(--blue)',ico:'📋'},
+          {l:'Approved GRVs',v:String(supGRVs.filter(g=>g.status==='Approved').length),c:'var(--green)',ico:'✅'},
+          {l:'Total Qty Received',v:String(totalItems),c:'var(--navy)',ico:'📦'},
+          {l:'Total Value',v:sym+' '+fmt(totalAmt,0),c:'var(--green)',ico:'💰'},
+        ].map(k=>React.createElement('div',{key:k.l,className:'card',style:{display:'flex',alignItems:'center',gap:10,borderLeft:'3px solid '+k.c,padding:'12px 14px'}},
+          React.createElement('div',{style:{fontSize:20}},k.ico),
+          React.createElement('div',null,React.createElement('div',{style:{fontSize:17,fontWeight:800,color:k.c}},k.v),React.createElement('div',{style:{fontSize:11,color:'var(--txt2)'}},k.l))
+        ))
+      ),
+      React.createElement('div',{className:'card',style:{marginBottom:14}},
+        React.createElement('div',{className:'card-hd'},React.createElement('span',{className:'card-t'},'Contact Information')),
+        React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,fontSize:13}},
+          [['📞 Contact',sup.contact||'-'],['📧 Email',sup.email||'-'],['🏛️ GST No.',sup.gst||'-'],['📍 Address',sup.address||'-'],['Status',React.createElement('span',{className:'sdot '+(sup.status==='Active'?'active':'inactive')},sup.status)]]
+          .map(([l,v])=>React.createElement('div',{key:l},React.createElement('div',{style:{fontSize:10,color:'var(--txt3)',marginBottom:3,textTransform:'uppercase',letterSpacing:'.4px'}},l),React.createElement('div',{style:{fontWeight:600}},v)))
+        )
+      ),
+      React.createElement('div',{className:'card'},
+        React.createElement('div',{className:'card-hd'},React.createElement('span',{className:'card-t'},'GRV History from this Supplier')),
+        supGRVs.length===0
+          ? React.createElement('div',{style:{padding:'32px',textAlign:'center',color:'var(--txt3)'}},React.createElement('div',{style:{fontSize:32,marginBottom:8}},'📭'),React.createElement('div',null,'No GRVs from this supplier yet'))
+          : React.createElement('div',{className:'tw',style:{border:'none',boxShadow:'none'}},
+            React.createElement('table',null,
+              React.createElement('thead',null,React.createElement('tr',null,['GRV No.','Date','Invoice No.','Total Qty','Amount','Status','Approved By'].map(h=>React.createElement('th',{key:h},h)))),
+              React.createElement('tbody',null,
+                supGRVs.map(g=>React.createElement('tr',{key:g.id},
+                  React.createElement('td',null,React.createElement('span',{style:{color:'var(--blue)',fontWeight:700,fontFamily:'var(--mono)',fontSize:11}},g.grvNo)),
+                  React.createElement('td',null,fmtDate(g.date)),
+                  React.createElement('td',null,g.invoiceNo||'-'),
+                  React.createElement('td',null,String(g.totalQty||0)),
+                  React.createElement('td',null,React.createElement('strong',null,sym+' '+fmt(g.totalAmount||0,2))),
+                  React.createElement('td',null,React.createElement(Badge,{c:g.status==='Approved'?'green':g.status==='Rejected'?'red':'amber'},g.status)),
+                  React.createElement('td',null,g.approvedBy||'-')
+                ))
+              )
+            )
+          )
+      )
+    );
+  }
+
   return React.createElement('div',null,
     React.createElement('div',{className:'ph'},
-      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Supplier Master'),React.createElement('p',null,`${sups.length} suppliers`)),
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Supplier Master'),React.createElement('p',null,String(sups.length)+' suppliers — click any row for details')),
       React.createElement('div',{className:'ph-r'},React.createElement('button',{className:'btn btn-primary',onClick:()=>setModal(React.createElement(SupForm,{onClose:()=>setModal(null),onSave:d=>{supplierSvc.create(d);toast('Supplier added','success');reloadSups();setModal(null);}}))},React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' Add Supplier'))
     ),
     React.createElement('div',{className:'tw'},
       React.createElement('table',null,
-        React.createElement('thead',null,React.createElement('tr',null,['#','Supplier Name','Contact','Email','GST No.','Status','Action'].map(h=>React.createElement('th',{key:h},h)))),
+        React.createElement('thead',null,React.createElement('tr',null,['#','Supplier Name','Contact','Email','GST No.','GRVs','Status',''].map(h=>React.createElement('th',{key:h},h)))),
         React.createElement('tbody',null,
-          sups.map((s,i)=>React.createElement('tr',{key:s.id},
-            React.createElement('td',null,i+1),
-            React.createElement('td',null,React.createElement('span',{style:{fontWeight:600}},s.name)),
-            React.createElement('td',null,s.contact||'-'),
-            React.createElement('td',null,s.email||'-'),
-            React.createElement('td',null,s.gst||'-'),
-            React.createElement('td',null,React.createElement('span',{className:`sdot ${s.status==='Active'?'active':'inactive'}`},s.status)),
-            React.createElement('td',null,React.createElement('div',{style:{display:'flex',gap:5}},
-              React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>setModal(React.createElement(SupForm,{initial:s,onClose:()=>setModal(null),onSave:d=>{supplierSvc.update(s.id,d);toast('Updated','success');reloadSups();setModal(null);}}))},React.createElement(Ic,{n:'edit',s:13})),
-              React.createElement('button',{className:'btn btn-danger btn-sm btn-icon',onClick:()=>setModal(React.createElement(Confirm,{title:'Delete Supplier',text:`Delete "${s.name}"?`,onCancel:()=>setModal(null),onOk:()=>{supplierSvc.delete(s.id);toast('Deleted','success');reloadSups();setModal(null);}}))},React.createElement(Ic,{n:'trash',s:13}))
-            ))
-          ))
+          sups.map((s,i)=>{
+            const supGRVCount=grvSvc.getAll(null).filter(g=>g.supplierId===s.id||g.supplierName===s.name).length;
+            return React.createElement('tr',{key:s.id,style:{cursor:'pointer'},onClick:()=>setDetail(s)},
+              React.createElement('td',null,String(i+1)),
+              React.createElement('td',null,React.createElement('span',{style:{fontWeight:600}},s.name)),
+              React.createElement('td',null,s.contact||'-'),
+              React.createElement('td',null,s.email||'-'),
+              React.createElement('td',null,s.gst||'-'),
+              React.createElement('td',null,React.createElement(Badge,{c:'blue'},String(supGRVCount),' GRVs')),
+              React.createElement('td',null,React.createElement('span',{className:'sdot '+(s.status==='Active'?'active':'inactive')},s.status)),
+              React.createElement('td',{onClick:e=>e.stopPropagation()},React.createElement('div',{style:{display:'flex',gap:5}},
+                React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>setModal(React.createElement(SupForm,{initial:s,onClose:()=>setModal(null),onSave:d=>{supplierSvc.update(s.id,d);toast('Updated','success');reloadSups();setModal(null);}}))},React.createElement(Ic,{n:'edit',s:13})),
+                React.createElement('button',{className:'btn btn-danger btn-sm btn-icon',onClick:()=>setModal(React.createElement(Confirm,{title:'Delete Supplier',text:'Delete "'+s.name+'"?',onCancel:()=>setModal(null),onOk:()=>{supplierSvc.delete(s.id);toast('Deleted','success');reloadSups();setModal(null);}}))},React.createElement(Ic,{n:'trash',s:13}))
+              ))
+            );
+          })
         )
       )
-    )
+    ),
+    React.createElement('div',{style:{marginTop:8,fontSize:11,color:'var(--txt3)',textAlign:'center'}},'💡 Click any row to view supplier details & GRV history')
   );
 }
+
 
 // ════════════════════════════════════════
 //  GRV — GOODS RECEIPT VOUCHER

@@ -1481,57 +1481,139 @@ function Warehouses(){
 function StockTransfer(){
   const {toast,whId,isSA,user,reload}=useCtx();
   const [tab,setTab]=useState('list');
-  const sett=settSvc.get();const sym=sett.currencySymbol||'QR';
+  const sett=settSvc.get();
   const whs=whSvc.getAll();
   const [trns,setTrns]=useState(trnSvc.getAll(whId));
   const [q,setQ]=useState('');
-  const [fromWh,setFromWh]=useState(whId||whs[0]?.id||'');
-  const [toWh,setToWh]=useState(whs.find(w=>w.id!==fromWh)?.id||whs[1]?.id||'');
-  const fromItems=itemSvc.getAll(fromWh);
-  const [form,setForm]=useState({date:today(),fromWhId:fromWh,toWhId:toWh,purpose:'',remarks:'',items:[{itemId:'',unit:'',availQty:0,qty:''}]});
+
+  // ── Always keep fromWh and toWh different ──
+  // For SA: default from WH-01, to WH-02
+  // For non-SA: from = their warehouse, to = any other
+  const defaultFrom = whId||whs[0]?.id||'';
+  const defaultTo   = whs.find(w=>w.id!==defaultFrom)?.id||'';
+
+  const [fromWh,setFromWh]=useState(defaultFrom);
+  const [toWh,setToWh]=useState(defaultTo);
+
+  // Reactive: items from source warehouse update when fromWh changes
+  const fromItems=useMemo(()=>itemSvc.getAll(fromWh),[fromWh,tab]);
+
+  const blankForm=()=>({
+    date:today(),fromWhId:fromWh,toWhId:toWh,
+    purpose:'',remarks:'',
+    items:[{itemId:'',unit:'',availQty:0,qty:''}],
+  });
+  const [form,setForm]=useState(blankForm);
   const sf=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  // When fromWh changes: update form, reset items, auto-set toWh to different warehouse
+  const handleFromWhChange=(newFrom)=>{
+    setFromWh(newFrom);
+    sf('fromWhId',newFrom);
+    // Auto-set toWh to first warehouse that is NOT the new fromWh
+    const newTo=whs.find(w=>w.id!==newFrom)?.id||'';
+    setToWh(newTo);
+    sf('toWhId',newTo);
+    // Reset items since source warehouse changed
+    setForm(p=>({...p,fromWhId:newFrom,toWhId:newTo,items:[{itemId:'',unit:'',availQty:0,qty:''}]}));
+  };
+
+  // When toWh changes
+  const handleToWhChange=(newTo)=>{
+    if(newTo===fromWh){toast('Destination cannot be same as source','error');return;}
+    setToWh(newTo);
+    sf('toWhId',newTo);
+  };
+
   const setIR=(idx,k,v)=>{
-    const rows=[...form.items];rows[idx]={...rows[idx],[k]:v};
-    if(k==='itemId'){const item=fromItems.find(i=>i.id===v);if(item){rows[idx].unit=item.unit;rows[idx].availQty=stockSvc.getQty(item.id,fromWh);}}
+    const rows=[...form.items];
+    rows[idx]={...rows[idx],[k]:v};
+    if(k==='itemId'){
+      const item=fromItems.find(i=>i.id===v);
+      if(item){
+        rows[idx].unit=item.unit;
+        rows[idx].availQty=stockSvc.getQty(item.id,fromWh);
+      }
+    }
     setForm(p=>({...p,items:rows}));
   };
   const addRow=()=>setForm(p=>({...p,items:[...p.items,{itemId:'',unit:'',availQty:0,qty:''}]}));
   const removeRow=idx=>setForm(p=>({...p,items:p.items.filter((_,i)=>i!==idx)}));
+
   const submitTrn=()=>{
-    if(fromWh===toWh){toast('Source and destination must be different','error');return;}
+    if(!fromWh||!toWh){toast('Select both warehouses','error');return;}
+    if(fromWh===toWh){toast('Source and destination must be different warehouses','error');return;}
     const valid=form.items.filter(r=>r.itemId&&r.qty&&Number(r.qty)>0);
-    if(!valid.length){toast('Add at least one item','error');return;}
+    if(!valid.length){toast('Add at least one item with quantity','error');return;}
     for(const row of valid){
-      if(Number(row.qty)>row.availQty){const item=fromItems.find(i=>i.id===row.itemId);toast(`Insufficient stock for ${item?.name}: ${row.availQty} available`,'error');return;}
+      if(Number(row.qty)>Number(row.availQty)){
+        const item=fromItems.find(i=>i.id===row.itemId);
+        toast('Insufficient stock for: '+(item?.name||'-')+' (Available: '+String(row.availQty)+')','error');
+        return;
+      }
     }
-    trnSvc.create({date:form.date,fromWhId:fromWh,toWhId:toWh,purpose:form.purpose,remarks:form.remarks,submittedBy:user?.name,items:valid});
+    trnSvc.create({
+      date:form.date,fromWhId:fromWh,toWhId:toWh,
+      purpose:form.purpose,remarks:form.remarks,
+      submittedBy:user?.name,items:valid,
+    });
     toast('Transfer submitted — Pending Super Admin Approval','success');
     setTrns(trnSvc.getAll(whId));reload();setTab('list');
   };
 
-  const filtTrns=trns.filter(t=>!q||(t.trnNo||'').toLowerCase().includes(q.toLowerCase()));
+  const openForm=()=>{
+    // Always reset to safe defaults when opening form
+    const from=whId||whs[0]?.id||'';
+    const to=whs.find(w=>w.id!==from)?.id||'';
+    setFromWh(from);setToWh(to);
+    setForm({date:today(),fromWhId:from,toWhId:to,purpose:'',remarks:'',items:[{itemId:'',unit:'',availQty:0,qty:''}]});
+    setTab('form');
+  };
 
+  const filtTrns=trns.filter(t=>!q||(t.trnNo||'').toLowerCase().includes(q.toLowerCase()));
+  const fromWhObj=whSvc.getById(fromWh);
+  const toWhObj=whSvc.getById(toWh);
+
+  // ── LIST VIEW ──
   if(tab==='list')return React.createElement('div',null,
     React.createElement('div',{className:'ph'},
-      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Stock Transfer'),React.createElement('p',null,'Transfer stock between warehouses · Requires Super Admin approval')),
-      React.createElement('div',{className:'ph-r'},React.createElement('button',{className:'btn btn-primary',onClick:()=>{setFromWh(whId||whs[0]?.id||'');setToWh(whs.find(w=>w.id!==(whId||whs[0]?.id))?.id||'');setForm({date:today(),purpose:'',remarks:'',items:[{itemId:'',unit:'',availQty:0,qty:''}]});setTab('form');}},React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' New Transfer'))
+      React.createElement('div',{className:'ph-l'},
+        React.createElement('h1',null,'Stock Transfer'),
+        React.createElement('p',null,'Transfer stock between warehouses · Requires Super Admin approval')
+      ),
+      React.createElement('div',{className:'ph-r'},
+        React.createElement('button',{className:'btn btn-primary',onClick:openForm},
+          React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' New Transfer')
+      )
     ),
-    React.createElement('div',{className:'alert alert-blue',style:{marginBottom:14}},React.createElement(Ic,{n:'info',s:13}),'Stock moves only after ',React.createElement('strong',null,'Super Admin approves'),' the transfer. You can submit and it will be held for approval.'),
-    React.createElement('div',{className:'sb-bar'},React.createElement('div',{className:'si'},React.createElement('div',{className:'si-ico'},React.createElement(Ic,{n:'search',s:13,c:'var(--txt3)'})),React.createElement('input',{placeholder:'Search transfer no...',value:q,onChange:e=>setQ(e.target.value)}))),
+    React.createElement('div',{className:'alert alert-blue',style:{marginBottom:14}},
+      React.createElement(Ic,{n:'info',s:13}),
+      'Stock moves only after ',React.createElement('strong',null,'Super Admin approves'),'. Submit here and approve in the Approvals page.'
+    ),
+    React.createElement('div',{className:'sb-bar'},
+      React.createElement('div',{className:'si'},
+        React.createElement('div',{className:'si-ico'},React.createElement(Ic,{n:'search',s:13,c:'var(--txt3)'})),
+        React.createElement('input',{placeholder:'Search transfer no...',value:q,onChange:e=>setQ(e.target.value)})
+      )
+    ),
     React.createElement('div',{className:'tw'},
       React.createElement('table',null,
-        React.createElement('thead',null,React.createElement('tr',null,['Transfer No.','Date','From','To','Items','Purpose','Submitted By','Status','Approved By'].map(h=>React.createElement('th',{key:h},h)))),
+        React.createElement('thead',null,React.createElement('tr',null,
+          ['Transfer No.','Date','From Warehouse','→','To Warehouse','Items','Purpose','Submitted By','Status','Approved By'].map(h=>React.createElement('th',{key:h},h))
+        )),
         React.createElement('tbody',null,
           filtTrns.length===0
-            ? React.createElement('tr',null,React.createElement('td',{colSpan:9},React.createElement('div',{className:'te'},'No transfers found')))
+            ? React.createElement('tr',null,React.createElement('td',{colSpan:10},React.createElement('div',{className:'te'},'No transfers yet. Click New Transfer to create one.')))
             : filtTrns.map(t=>{
-              const fromW=whSvc.getById(t.fromWhId);const toW=whSvc.getById(t.toWhId);
+              const fW=whSvc.getById(t.fromWhId);
+              const tW=whSvc.getById(t.toWhId);
               return React.createElement('tr',{key:t.id},
                 React.createElement('td',null,React.createElement('span',{style:{color:'#0d9488',fontWeight:700,fontFamily:'var(--mono)',fontSize:11}},t.trnNo||'—')),
                 React.createElement('td',null,fmtDate(t.date)),
-                React.createElement('td',null,fromW?React.createElement('span',{style:{fontSize:11,background:'var(--blue-light)',color:'var(--blue)',padding:'2px 7px',borderRadius:20,fontWeight:600}},fromW.code):'-'),
-                React.createElement('td',null,toW?React.createElement('span',{style:{fontSize:11,background:'var(--green-light)',color:'var(--green)',padding:'2px 7px',borderRadius:20,fontWeight:600}},toW.code):'-'),
-                React.createElement('td',null,(t.items?.length||0)+' items'),
+                React.createElement('td',null,React.createElement(WhBadge,{whId:t.fromWhId})),
+                React.createElement('td',null,React.createElement('span',{style:{color:'var(--txt3)',fontSize:16}},'→')),
+                React.createElement('td',null,React.createElement(WhBadge,{whId:t.toWhId})),
+                React.createElement('td',null,String(t.items?.length||0)+' items'),
                 React.createElement('td',null,t.purpose||'-'),
                 React.createElement('td',null,t.submittedBy||'-'),
                 React.createElement('td',null,React.createElement(Badge,{c:t.status==='Approved'?'green':t.status==='Rejected'?'red':'amber'},t.status)),
@@ -1543,53 +1625,143 @@ function StockTransfer(){
     )
   );
 
-  // Transfer form
+  // ── FORM VIEW ──
   return React.createElement('div',null,
     React.createElement('div',{className:'ph'},
-      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'New Stock Transfer')),
+      React.createElement('div',{className:'ph-l'},
+        React.createElement('h1',null,'New Stock Transfer'),
+        React.createElement('p',null,'Select source and destination warehouses, then add items')
+      ),
       React.createElement('div',{className:'ph-r'},
         React.createElement('button',{className:'btn btn-outline',onClick:()=>setTab('list')},'← Cancel'),
-        React.createElement('button',{className:'btn btn-primary',onClick:submitTrn},React.createElement(Ic,{n:'transfer',s:13,c:'#fff'}),' Submit Transfer')
+        React.createElement('button',{className:'btn btn-primary',style:{background:'#0d9488',borderColor:'#0d9488'},onClick:submitTrn},
+          React.createElement(Ic,{n:'transfer',s:13,c:'#fff'}),' Submit Transfer')
       )
     ),
-    React.createElement('div',{className:'alert alert-amber',style:{marginBottom:12}},React.createElement(Ic,{n:'alert',s:13}),'Stock is deducted from ',React.createElement('strong',null,'source warehouse'),' and added to ',React.createElement('strong',null,'destination'),' ONLY after Super Admin approves.'),
+    React.createElement('div',{className:'alert alert-amber',style:{marginBottom:12}},
+      React.createElement(Ic,{n:'alert',s:13}),
+      'Stock deducted from ',React.createElement('strong',null,'source'),
+      ' and added to ',React.createElement('strong',null,'destination'),
+      ' ONLY after Super Admin approves.'
+    ),
+    // Warehouse selector card — visually shows FROM → TO
     React.createElement('div',{className:'card',style:{marginBottom:12}},
-      React.createElement('div',{className:'frow3'},
-        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Date *'),React.createElement('input',{className:'fi',type:'date',value:form.date,onChange:e=>sf('date',e.target.value)})),
-        React.createElement('div',{className:'fg'},
-          React.createElement('label',{className:'flbl'},'From Warehouse *'),
-          React.createElement('select',{className:'fi',value:fromWh,onChange:e=>{setFromWh(e.target.value);sf('fromWhId',e.target.value);}},
+      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 60px 1fr',gap:12,alignItems:'end',marginBottom:16}},
+        // FROM warehouse
+        React.createElement('div',null,
+          React.createElement('label',{className:'flbl'},'From Warehouse (Source) *'),
+          React.createElement('select',{
+            className:'fi',
+            value:fromWh,
+            onChange:e=>handleFromWhChange(e.target.value),
+            disabled:!isSA&&!!whId,
+            style:{borderColor:'var(--red)',borderWidth:2},
+          },
             whs.map(w=>React.createElement('option',{key:w.id,value:w.id},w.name+' ('+w.code+')'))
+          ),
+          fromWhObj&&React.createElement('div',{style:{marginTop:6,fontSize:11,color:'var(--txt2)'}},
+            '📦 ',String(itemSvc.getAll(fromWh).length),' items · ',
+            React.createElement('span',{style:{color:'var(--red)',fontWeight:600}},String(stockSvc.getLow(fromWh).length),' low stock')
           )
         ),
-        React.createElement('div',{className:'fg'},
-          React.createElement('label',{className:'flbl'},'To Warehouse *'),
-          React.createElement('select',{className:'fi',value:toWh,onChange:e=>{setToWh(e.target.value);sf('toWhId',e.target.value);}},
+        // Arrow
+        React.createElement('div',{style:{textAlign:'center',paddingBottom:10}},
+          React.createElement('div',{style:{fontSize:28,color:'var(--blue)',fontWeight:700}},'→'),
+          React.createElement('div',{style:{fontSize:9,color:'var(--txt3)',textTransform:'uppercase',letterSpacing:'.5px'}})
+        ),
+        // TO warehouse
+        React.createElement('div',null,
+          React.createElement('label',{className:'flbl'},'To Warehouse (Destination) *'),
+          React.createElement('select',{
+            className:'fi',
+            value:toWh,
+            onChange:e=>handleToWhChange(e.target.value),
+            style:{borderColor:'var(--green)',borderWidth:2},
+          },
             whs.filter(w=>w.id!==fromWh).map(w=>React.createElement('option',{key:w.id,value:w.id},w.name+' ('+w.code+')'))
+          ),
+          toWhObj&&React.createElement('div',{style:{marginTop:6,fontSize:11,color:'var(--txt2)'}},
+            '📦 ',String(itemSvc.getAll(toWh).length),' items currently in stock'
           )
         )
       ),
+      // Validation banner if same warehouse somehow selected
+      fromWh&&toWh&&fromWh===toWh&&React.createElement('div',{className:'alert alert-red',style:{marginBottom:0}},
+        React.createElement(Ic,{n:'alert',s:13}),' Source and destination cannot be the same warehouse!'
+      ),
       React.createElement('div',{className:'frow'},
-        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Purpose / Reason'),React.createElement('input',{className:'fi',value:form.purpose,onChange:e=>sf('purpose',e.target.value),placeholder:'Reason for transfer e.g. Rebalancing stock'})),
-        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Additional Remarks'),React.createElement('input',{className:'fi',value:form.remarks,onChange:e=>sf('remarks',e.target.value)}))
+        React.createElement('div',{className:'fg'},
+          React.createElement('label',{className:'flbl'},'Purpose / Reason *'),
+          React.createElement('input',{className:'fi',value:form.purpose,onChange:e=>sf('purpose',e.target.value),placeholder:'e.g. Rebalancing stock, Project requirement...'})
+        ),
+        React.createElement('div',{className:'fg'},
+          React.createElement('label',{className:'flbl'},'Date *'),
+          React.createElement('input',{className:'fi',type:'date',value:form.date,onChange:e=>sf('date',e.target.value)})
+        ),
+        React.createElement('div',{className:'fg'},
+          React.createElement('label',{className:'flbl'},'Additional Remarks'),
+          React.createElement('input',{className:'fi',value:form.remarks,onChange:e=>sf('remarks',e.target.value)})
+        )
       )
     ),
+    // Items card
     React.createElement('div',{className:'card'},
-      React.createElement('div',{style:{fontWeight:700,fontSize:13,marginBottom:10}},'Items to Transfer from '+( whSvc.getById(fromWh)?.name||'—')),
-      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'3fr 1fr 1fr 1.5fr 32px',gap:6,alignItems:'center',padding:'5px 0 8px',borderBottom:'2px solid var(--border)',fontSize:10,fontWeight:700,color:'var(--txt2)',textTransform:'uppercase',letterSpacing:'.5px'}},
-        React.createElement('span',null,'Item'),React.createElement('span',null,'UOM'),React.createElement('span',null,'Available'),React.createElement('span',null,'Qty to Transfer'),React.createElement('span',null,'')
-      ),
-      form.items.map((row,idx)=>React.createElement('div',{key:idx,style:{display:'grid',gridTemplateColumns:'3fr 1fr 1fr 1.5fr 32px',gap:6,alignItems:'center',padding:'7px 0',borderBottom:'1px solid var(--border)'}},
-        React.createElement('select',{className:'fi',style:{fontSize:12,padding:'5px 8px'},value:row.itemId,onChange:e=>setIR(idx,'itemId',e.target.value)},
-          React.createElement('option',{value:''},'Select item...'),
-          fromItems.map(i=>React.createElement('option',{key:i.id,value:i.id},`${i.code} — ${i.name} (Avail: ${stockSvc.getQty(i.id,fromWh)} ${i.unit})`))
+      React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
+        React.createElement('div',{style:{fontWeight:700,fontSize:13,color:'var(--navy)'}},
+          'Items to Transfer from ',
+          React.createElement('span',{style:{color:'var(--red)',fontWeight:800}},fromWhObj?.name||'—')
         ),
-        React.createElement('span',{style:{fontSize:12,color:'var(--txt2)'}},row.unit||'-'),
-        React.createElement('span',{style:{fontWeight:700,color:row.availQty>0?'var(--green)':'var(--red)',fontSize:13}},row.availQty),
-        React.createElement('input',{className:'fi',style:{fontSize:12,padding:'5px 8px'},type:'number',min:1,max:row.availQty,value:row.qty,onChange:e=>setIR(idx,'qty',e.target.value),placeholder:'0'}),
-        React.createElement('button',{className:'btn btn-danger btn-icon',style:{width:26,height:26,minWidth:26},onClick:()=>removeRow(idx),disabled:form.items.length===1},React.createElement(Ic,{n:'x',s:11}))
+        React.createElement('div',{style:{fontSize:11,color:'var(--txt3)'}},
+          String(fromItems.length),' items available in source warehouse'
+        )
+      ),
+      fromItems.length===0
+        ? React.createElement('div',{className:'alert alert-amber'},
+            React.createElement(Ic,{n:'alert',s:13}),' No items found in ',fromWhObj?.name||'source warehouse','. Add items to this warehouse first.'
+          )
+        : null,
+      // Items table header
+      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'3fr 90px 110px 140px 36px',gap:8,alignItems:'center',padding:'6px 0 10px',borderBottom:'2px solid var(--border)',fontSize:10,fontWeight:700,color:'var(--txt2)',textTransform:'uppercase',letterSpacing:'.5px'}},
+        React.createElement('span',null,'Item (from '+String(fromWhObj?.name||'—')+')'),
+        React.createElement('span',null,'UOM'),
+        React.createElement('span',null,'Available'),
+        React.createElement('span',null,'Qty to Transfer'),
+        React.createElement('span',null,'')
+      ),
+      form.items.map((row,idx)=>React.createElement('div',{key:idx,style:{display:'grid',gridTemplateColumns:'3fr 90px 110px 140px 36px',gap:8,alignItems:'center',padding:'8px 0',borderBottom:'1px solid var(--border)'}},
+        React.createElement('select',{className:'fi',style:{fontSize:12,padding:'6px 8px'},value:row.itemId,onChange:e=>setIR(idx,'itemId',e.target.value)},
+          React.createElement('option',{value:''},'Select item from '+String(fromWhObj?.name||'—')+'...'),
+          fromItems.map(i=>{
+            const avail=stockSvc.getQty(i.id,fromWh);
+            return React.createElement('option',{key:i.id,value:i.id},i.code+' — '+i.name+' (Avail: '+String(avail)+' '+i.unit+')');
+          })
+        ),
+        React.createElement('span',{style:{fontSize:12,color:'var(--txt2)',textAlign:'center'}},row.unit||'-'),
+        React.createElement('span',{style:{fontWeight:800,fontSize:15,color:row.availQty>0?'var(--green)':'var(--red)',textAlign:'center'}},
+          String(row.availQty),row.unit?' '+row.unit:''
+        ),
+        React.createElement('input',{
+          className:'fi',
+          style:{fontSize:12,padding:'6px 8px',border:Number(row.qty)>Number(row.availQty)?'2px solid var(--red)':''},
+          type:'number',min:1,max:row.availQty,
+          value:row.qty,
+          onChange:e=>setIR(idx,'qty',e.target.value),
+          placeholder:'Enter qty',
+        }),
+        React.createElement('button',{
+          className:'btn btn-danger btn-icon',
+          style:{width:28,height:28,minWidth:28,padding:0},
+          onClick:()=>removeRow(idx),
+          disabled:form.items.length===1,
+        },React.createElement(Ic,{n:'x',s:12}))
       )),
-      React.createElement('div',{style:{marginTop:10}},React.createElement('button',{className:'btn btn-outline btn-sm',onClick:addRow},React.createElement(Ic,{n:'plus',s:12}),' Add Item'))
+      React.createElement('div',{style:{marginTop:12,paddingTop:10,borderTop:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center'}},
+        React.createElement('button',{className:'btn btn-outline btn-sm',onClick:addRow},
+          React.createElement(Ic,{n:'plus',s:12}),' Add Item'),
+        React.createElement('div',{style:{fontSize:12,color:'var(--txt2)'}},
+          'Total items: ',React.createElement('strong',null,String(form.items.filter(r=>r.itemId&&r.qty).length))
+        )
+      )
     )
   );
 }

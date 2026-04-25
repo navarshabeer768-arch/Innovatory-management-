@@ -1645,7 +1645,7 @@ function Categories(){
 //  ITEM MASTER
 // ════════════════════════════════════════
 function ItemForm({initial,onSave,onClose}){
-  const racks=rackSvc.getAll();
+  const racks=rackSvc.getAll(null);
   const [f,setF]=useState(initial||{name:'',code:'',category:'MECH',rackId:'',unit:'NOS',costPrice:'',minStock:'5',status:'Active',description:''});
   const [e,setE]=useState({});
   const s=(k,v)=>setF(p=>({...p,[k]:v}));
@@ -2171,7 +2171,7 @@ function GRVEntry(){
         ),
         React.createElement('select',{className:'fi',style:{fontSize:12,padding:'6px 8px'},value:row.rackId,onChange:e=>setItemRow(idx,'rackId',e.target.value)},
           React.createElement('option',{value:''},'Select Rack'),
-          rackSvc.getAll().map(r=>React.createElement('option',{key:r.id,value:r.id},r.code))
+          rackSvc.getAll(null).map(r=>React.createElement('option',{key:r.id,value:r.id},r.code))
         ),
         React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px'},value:row.unit,readOnly:true,placeholder:'UOM'}),
         React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px'},type:'number',min:0,value:row.qtyReceived,onChange:e=>setItemRow(idx,'qtyReceived',e.target.value),placeholder:'0'}),
@@ -2448,7 +2448,7 @@ function StockView(){
           filtered.length===0
             ? React.createElement('tr',null,React.createElement('td',{colSpan:14},React.createElement('div',{className:'te'},'No items found')))
             : filtered.map(item=>{
-              const rack=rackSvc.getAll().find(r=>r.id===item.rackId);
+              const rack=rackSvc.getAll(null).find(r=>r.id===item.rackId);
               const qty=stockSvc.getQty(item.id,item.whId);
               const low=qty<=item.minStock;
               const allGRV=grvSvc.getAll(null).flatMap(g=>g.items||[]).filter(r=>r.itemId===item.id);
@@ -2769,7 +2769,7 @@ function Users(){
             React.createElement('div',null,
               React.createElement('div',{style:{fontSize:13,fontWeight:600,color:'var(--txt)'}},
                 '📥 GRV Approval',
-                (isSA||f.canApproveGRV)&&React.createElement('span',{className:'badge b-green',style:{marginLeft:8,fontSize:10}},'Enabled')
+                (isSA2||f.canApproveGRV)&&React.createElement('span',{className:'badge b-green',style:{marginLeft:8,fontSize:10}},'Enabled')
               ),
               React.createElement('div',{style:{fontSize:11,color:'var(--txt3)',marginTop:2}},'Can approve or reject Goods Receipt Vouchers')
             )
@@ -2780,7 +2780,7 @@ function Users(){
             React.createElement('div',null,
               React.createElement('div',{style:{fontSize:13,fontWeight:600,color:'var(--txt)'}},
                 '📤 GIV Approval',
-                (isSA||f.canApproveGIV)&&React.createElement('span',{className:'badge b-amber',style:{marginLeft:8,fontSize:10}},'Enabled')
+                (isSA2||f.canApproveGIV)&&React.createElement('span',{className:'badge b-amber',style:{marginLeft:8,fontSize:10}},'Enabled')
               ),
               React.createElement('div',{style:{fontSize:11,color:'var(--txt3)',marginTop:2}},'Can approve or reject Goods Issue Vouchers')
             )

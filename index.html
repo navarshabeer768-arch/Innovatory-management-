@@ -425,7 +425,7 @@ const SEED={
 function seedDB(){
   if(!db.g('seeded_mwh')){
     // Clear old single-warehouse data
-    ['racks','items','stock','grv','giv','users','settings','suppliers','departments','session','seeded3'].forEach(k=>db.d(k));
+    ['racks','items','stock','grv','giv','transfers','users','settings','suppliers','departments','session','seeded3'].forEach(k=>db.d(k));
     Object.entries(SEED).forEach(([k,v])=>db.s(k,v));
     db.s('seeded_mwh',true);
   }
@@ -547,7 +547,7 @@ const trnSvc={
       // Deduct from source warehouse
       stockSvc.adjust(row.itemId,fromWhId,-Number(row.qty));
       // Find matching item in destination warehouse (same code or same original item)
-      const srcItem=itemSvc.getById(row.itemId);
+      const srcItem=(db.g('items')||[]).find(i=>i.id===row.itemId);
       if(!srcItem)return;
       const allItems=db.g('items')||[];
       // Look for same item code in destination warehouse
@@ -968,8 +968,8 @@ function Dashboard(){
     {l:'Pending',        v:String(pendingApprovals),    s:'Click for approvals',    ico:'⏳',c:pendingApprovals?'var(--amber)':'var(--green)',fn:()=>nav('approvals')},
   ];
   const todayRow=[
-    {l:'GRN Today',      v:String(grvToday),  ico:'📥',c:'var(--blue)',  fn:()=>nav('grv')},
-    {l:'GIN Today',      v:String(givToday),  ico:'📤',c:'var(--amber)', fn:()=>nav('giv')},
+    {l:'GRN Today',      v:String(grvToday),  ico:'📥',c:'var(--blue)',  fn:()=>nav('grn')},
+    {l:'GIN Today',      v:String(givToday),  ico:'📤',c:'var(--amber)', fn:()=>nav('gin')},
     {l:'Warehouses',     v:String(whs.length),ico:'🏭', c:'#0d9488',     fn:()=>isSA?nav('warehouses'):null},
     {l:'Transfers',      v:String(trnSvc.getAll(whId).length),ico:'🔄',c:'#7c3aed',fn:()=>nav('transfer')},
   ];
@@ -2877,7 +2877,7 @@ function StockView(){
 // ════════════════════════════════════════
 function Reports(){
   const {toast,whId,isSA}=useCtx();
-  const [tab,setTab]=useState('grn');
+  const [tab,setTab]=useState('stock');
   const sett=settSvc.get();
   const sym=sett.currencySymbol||'QR';
   const whs=whSvc.getAll();
@@ -3584,8 +3584,8 @@ function App(){
     items:React.createElement(Items),
     racks:React.createElement(Racks),
     suppliers:React.createElement(Suppliers),
-    grv:React.createElement(GRVEntry),
-    giv:React.createElement(GIVEntry),
+    grn:React.createElement(GRVEntry),
+    gin:React.createElement(GIVEntry),
     transfer:React.createElement(StockTransfer),
     approvals:React.createElement(Approvals),
     stockview:React.createElement(StockView),
@@ -3601,8 +3601,8 @@ function App(){
     items:['Masters','Item Master'],
     racks:['Masters','Rack Management'],
     suppliers:['Masters','Supplier Master'],
-    grv:['Transaction','GRN Entry'],
-    giv:['Transaction','GIN Entry'],
+    grn:['Transaction','GRN Entry'],
+    gin:['Transaction','GIN Entry'],
     transfer:['Transaction','Stock Transfer'],
     approvals:['Transaction','Approvals'],
     stockview:['Inventory','Stock View'],

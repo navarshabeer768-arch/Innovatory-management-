@@ -636,6 +636,21 @@ const supplierSvc={
   update:(id,d)=>{const a=(db.g('suppliers')||[]).map(s=>s.id===id?{...s,...d}:s);db.s('suppliers',a);return a.find(s=>s.id===id);},
   delete:(id)=>db.s('suppliers',(db.g('suppliers')||[]).filter(s=>s.id!==id)),
 };
+const mrSvc={
+  getAll:(whId)=>{const a=(db.g('matreq')||[]).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));return whId?a.filter(v=>v.whId===whId):a;},
+  getPending:(whId)=>mrSvc.getAll(whId).filter(v=>v.status==='Pending Approval'),
+  create:(d)=>{const a=db.g('matreq')||[];const n=a.length+1;const v={...d,id:uid(),mrNo:`MR-${String(n).padStart(6,'0')}`,status:'Pending Approval',createdAt:ts()};db.s('matreq',[...a,v]);return v;},
+  approve:(id,approverName)=>{const a=db.g('matreq')||[];const idx=a.findIndex(v=>v.id===id);if(idx<0)return;a[idx]={...a[idx],status:'Approved',approvedBy:approverName,approvedAt:ts()};db.s('matreq',a);return a[idx];},
+  reject:(id,approverName,reason)=>{const a=db.g('matreq')||[];const idx=a.findIndex(v=>v.id===id);if(idx<0)return;a[idx]={...a[idx],status:'Rejected',approvedBy:approverName,approvedAt:ts(),rejectReason:reason};db.s('matreq',a);return a[idx];},
+  issue:(id,approverName)=>{const a=db.g('matreq')||[];const idx=a.findIndex(v=>v.id===id);if(idx<0)return;a[idx]={...a[idx],status:'Issued',issuedBy:approverName,issuedAt:ts()};db.s('matreq',a);(a[idx].items||[]).forEach(row=>stockSvc.adjust(row.itemId,a[idx].whId,-Number(row.qty)));return a[idx];},
+};
+const dmgSvc={
+  getAll:(whId)=>{const a=(db.g('damaged')||[]).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));return whId?a.filter(v=>v.whId===whId):a;},
+  getPending:(whId)=>dmgSvc.getAll(whId).filter(v=>v.status==='Pending Approval'),
+  create:(d)=>{const a=db.g('damaged')||[];const n=a.length+1;const v={...d,id:uid(),dmgNo:`DMG-${String(n).padStart(6,'0')}`,status:'Pending Approval',createdAt:ts()};db.s('damaged',[...a,v]);return v;},
+  approve:(id,approverName)=>{const a=db.g('damaged')||[];const idx=a.findIndex(v=>v.id===id);if(idx<0)return;a[idx]={...a[idx],status:'Approved',approvedBy:approverName,approvedAt:ts()};db.s('damaged',a);(a[idx].items||[]).forEach(row=>stockSvc.adjust(row.itemId,a[idx].whId,-Number(row.qty)));return a[idx];},
+  reject:(id,approverName,reason)=>{const a=db.g('damaged')||[];const idx=a.findIndex(v=>v.id===id);if(idx<0)return;a[idx]={...a[idx],status:'Rejected',approvedBy:approverName,approvedAt:ts(),rejectReason:reason};db.s('damaged',a);return a[idx];},
+};
 
 const userSvc={
   getAll:()=>db.g('users')||[],
@@ -875,6 +890,8 @@ function Sidebar(){
     {id:'transfer',icon:'transfer',label:'Stock Transfer'},
     {id:'consumption',icon:'fire',label:'Consumption',dot:pendingCON},
     {id:'production',icon:'factory',label:'Production',dot:pendingPRO},
+    {id:'matreq',icon:'grv',label:'Material Request',dot:mrSvc.getPending(whId).length},
+    {id:'damaged',icon:'alert',label:'Damaged Products',dot:dmgSvc.getPending(whId).length},
     canApprove&&{id:'approvals',icon:'check',label:'Approvals',dot:pendingTotal},
     {type:'section',label:'Inventory'},
     {id:'stockview',icon:'stock',label:'Stock View',dot:low},
@@ -2124,6 +2141,114 @@ function Items(){
     React.createElement('div',{className:'ph'},
       React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Item Master'),React.createElement('p',null,String(filtered.length)+' items'+(isSA?' across all warehouses':' in '+(whSvc.getById(whId)?.name||'')))),
       React.createElement('div',{className:'ph-r'},
+        React.createElement('button',{className:'btn btn-outline',onClick:()=>{
+          const inp=document.createElement('input');inp.type='file';inp.accept='.csv,.xlsx,.xls';
+          inp.onchange=ev=>{
+            const file=ev.target.files[0];if(!file)return;
+            const reader=new FileReader();
+            reader.onload=e=>{
+              try{
+                const text=e.target.result;
+                const lines=text.split('\n').filter(l=>l.trim());
+                if(lines.length<2){toast('File must have header + data rows','error');return;}
+                const hdr=lines[0].split(',').map(h=>h.replace(/"/g,'').trim().toLowerCase());
+                const nameIdx=hdr.findIndex(h=>h.includes('name'));
+                const codeIdx=hdr.findIndex(h=>h.includes('code'));
+                const catIdx=hdr.findIndex(h=>h.includes('cat'));
+                const unitIdx=hdr.findIndex(h=>h.includes('unit')||h.includes('uom'));
+                const priceIdx=hdr.findIndex(h=>h.includes('price')||h.includes('cost')||h.includes('rate'));
+                const minIdx=hdr.findIndex(h=>h.includes('min'));
+                if(nameIdx<0){toast('Column "name" not found in CSV','error');return;}
+                let imported=0;let skipped=0;
+                lines.slice(1).forEach(line=>{
+                  if(!line.trim())return;
+                  const cols=line.split(',').map(c=>c.replace(/"/g,'').trim());
+                  const name=cols[nameIdx]||'';if(!name){skipped++;return;}
+                  const code=codeIdx>=0&&cols[codeIdx]?cols[codeIdx]:itemSvc.nextCode((catIdx>=0&&cols[catIdx])||'MECH');
+                  const cat=catIdx>=0&&cols[catIdx]&&CATS.find(c=>c.id===cols[catIdx]||c.name.toLowerCase()===cols[catIdx].toLowerCase())?
+                    (CATS.find(c=>c.id===cols[catIdx]||c.name.toLowerCase()===cols[catIdx].toLowerCase()).id):'MECH';
+                  const unit=unitIdx>=0&&cols[unitIdx]?cols[unitIdx]:'NOS';
+                  const costPrice=priceIdx>=0&&cols[priceIdx]?Number(cols[priceIdx])||0:0;
+                  const minStock=minIdx>=0&&cols[minIdx]?Number(cols[minIdx])||5:5;
+                  const targetWh=whF||whId||whs[0]?.id;
+                  const item=itemSvc.create({name,code,category:cat,unit,costPrice,minStock,status:'Active',whId:targetWh,description:''});
+                  stockSvc.setQty(item.id,targetWh,0);
+                  imported++;
+                });
+                toast(imported+' items imported'+(skipped?' ('+skipped+' skipped)':''),'success');
+                reloadItems();setModal(null);
+              }catch(err){toast('Import error: '+err.message,'error');}
+            };
+            reader.readAsText(file);
+          };
+          inp.click();
+          // Show import guide modal
+          setModal(React.createElement(Modal,{title:'📥 Import Items — CSV/Excel',onClose:()=>setModal(null),size:'md'},
+            React.createElement('div',null,
+              React.createElement('div',{className:'alert alert-blue',style:{marginBottom:14}},React.createElement(Ic,{n:'info',s:13}),' Upload a CSV file. Excel files should be saved as CSV first.'),
+              React.createElement('div',{className:'card',style:{marginBottom:14,background:'var(--off2)',boxShadow:'none'}},
+                React.createElement('div',{className:'card-t',style:{marginBottom:8}},'REQUIRED CSV FORMAT'),
+                React.createElement('pre',{style:{fontSize:11,color:'var(--navy)',overflowX:'auto',fontFamily:'var(--mono)',lineHeight:1.6}},'name,code,category,unit,costPrice,minStock\nBearing 6205,MEC-001,MECH,NOS,25.50,5\nControl Relay,ELE-002,ELEC,NOS,45.00,10\nPressure Gauge,INS-003,INST,NOS,120.00,2')
+              ),
+              React.createElement('div',{style:{marginBottom:14}},
+                React.createElement('div',{style:{fontSize:12,fontWeight:700,marginBottom:8,color:'var(--txt2)'}},'VALID CATEGORY IDs:'),
+                React.createElement('div',{style:{display:'flex',flexWrap:'wrap',gap:6}},
+                  CATS.map(c=>React.createElement('span',{key:c.id,className:'badge',style:{background:c.bg,color:c.color}},c.id,' – ',c.short))
+                )
+              ),
+              React.createElement('div',{className:'alert alert-amber'},React.createElement(Ic,{n:'alert',s:13}),' Items will be imported to: ',React.createElement('strong',null,whSvc.getById(whF||whId||whs[0]?.id)?.name||'selected warehouse')),
+              React.createElement('div',{style:{display:'flex',gap:8,justifyContent:'flex-end',marginTop:16}},
+                React.createElement('button',{className:'btn btn-outline',onClick:()=>{
+                  const csv='name,code,category,unit,costPrice,minStock\nBearing 6205,MEC-001,MECH,NOS,25.50,5\nControl Relay,ELE-002,ELEC,NOS,45.00,10';
+                  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='item_import_template.csv';a.click();
+                  toast('Template downloaded','success');
+                }},React.createElement(Ic,{n:'download',s:12}),' Download Template'),
+                React.createElement('button',{className:'btn btn-primary',onClick:()=>{
+                  const inp=document.createElement('input');inp.type='file';inp.accept='.csv';
+                  inp.onchange=ev=>{
+                    const file=ev.target.files[0];if(!file)return;
+                    const reader=new FileReader();
+                    reader.onload=e=>{
+                      try{
+                        const text=e.target.result;
+                        const lines=text.split('\n').filter(l=>l.trim());
+                        if(lines.length<2){toast('File must have header + data rows','error');return;}
+                        const hdr=lines[0].split(',').map(h=>h.replace(/"/g,'').trim().toLowerCase());
+                        const nameIdx=hdr.findIndex(h=>h.includes('name'));
+                        const codeIdx=hdr.findIndex(h=>h.includes('code'));
+                        const catIdx=hdr.findIndex(h=>h.includes('cat'));
+                        const unitIdx=hdr.findIndex(h=>h.includes('unit')||h.includes('uom'));
+                        const priceIdx=hdr.findIndex(h=>h.includes('price')||h.includes('cost')||h.includes('rate'));
+                        const minIdx=hdr.findIndex(h=>h.includes('min'));
+                        if(nameIdx<0){toast('Column "name" not found in CSV','error');return;}
+                        let imported=0;let skipped=0;
+                        lines.slice(1).forEach(line=>{
+                          if(!line.trim())return;
+                          const cols=line.split(',').map(c=>c.replace(/"/g,'').trim());
+                          const name=cols[nameIdx]||'';if(!name){skipped++;return;}
+                          const code=codeIdx>=0&&cols[codeIdx]?cols[codeIdx]:itemSvc.nextCode((catIdx>=0&&cols[catIdx])||'MECH');
+                          const cat=catIdx>=0&&cols[catIdx]&&CATS.find(c=>c.id===cols[catIdx]||c.name.toLowerCase()===cols[catIdx].toLowerCase())?
+                            (CATS.find(c=>c.id===cols[catIdx]||c.name.toLowerCase()===cols[catIdx].toLowerCase()).id):'MECH';
+                          const unit=unitIdx>=0&&cols[unitIdx]?cols[unitIdx]:'NOS';
+                          const costPrice=priceIdx>=0&&cols[priceIdx]?Number(cols[priceIdx])||0:0;
+                          const minStock=minIdx>=0&&cols[minIdx]?Number(cols[minIdx])||5:5;
+                          const targetWh=whF||whId||whs[0]?.id;
+                          const item=itemSvc.create({name,code,category:cat,unit,costPrice,minStock,status:'Active',whId:targetWh,description:''});
+                          stockSvc.setQty(item.id,targetWh,0);
+                          imported++;
+                        });
+                        toast(imported+' items imported'+(skipped?' ('+skipped+' skipped)':''),'success');
+                        reloadItems();setModal(null);
+                      }catch(err){toast('Import error: '+err.message,'error');}
+                    };
+                    reader.readAsText(file);
+                  };
+                  inp.click();
+                }},React.createElement(Ic,{n:'download',s:12}),' Choose CSV File & Import')
+              )
+            )
+          ));
+        }},React.createElement(Ic,{n:'download',s:13}),' Import CSV'),
         React.createElement('button',{className:'btn btn-primary',onClick:()=>setModal(React.createElement(ItemForm,{onClose:()=>setModal(null),onSave:d=>{const item=itemSvc.create({...d,costPrice:Number(d.costPrice),minStock:Number(d.minStock),whId:whF||whId||whs[0]?.id});stockSvc.setQty(item.id,item.whId||whF||whId||whs[0]?.id,0);toast('Item created','success');reloadItems();setModal(null);}}))},React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' Add Item')
       )
     ),
@@ -4019,11 +4144,15 @@ function Approvals(){
   const allTRN=trnSvc.getAll(whId);
   const allCON=conSvc.getAll(whId);
   const allPRO=proSvc.getAll(whId);
+  const allMR=mrSvc.getAll(whId);
+  const allDMG=dmgSvc.getAll(whId);
   const pendGRV=allGRV.filter(g=>g.status==='Pending Approval');
   const pendGIV=allGIV.filter(g=>g.status==='Pending Approval');
   const pendTRN=allTRN.filter(t=>t.status==='Pending Approval');
   const pendCON=allCON.filter(v=>v.status==='Pending Approval');
   const pendPRO=allPRO.filter(v=>v.status==='Pending Approval');
+  const pendMR=allMR.filter(v=>v.status==='Pending Approval');
+  const pendDMG=allDMG.filter(v=>v.status==='Pending Approval');
 
   const sc=s=>s==='Approved'?'green':s==='Rejected'?'red':s==='Draft'?'gray':'amber';
   const si=s=>({'Pending Approval':'⏳','Approved':'✅','Rejected':'❌','Draft':'📝'}[s]||'');
@@ -4044,6 +4173,8 @@ function Approvals(){
           else if(type==='gin')givSvc.reject(id,me.name,reason);
           else if(type==='con')conSvc.reject(id,me.name,reason);
           else if(type==='pro')proSvc.reject(id,me.name,reason);
+          else if(type==='mr')mrSvc.reject(id,me.name,reason);
+          else if(type==='dmg')dmgSvc.reject(id,me.name,reason);
           else trnSvc.reject(id,me.name,reason);
           toast('Rejected','success');setModal(null);reloadPage();
         }},'Confirm Reject')
@@ -4068,8 +4199,12 @@ function Approvals(){
     const canAct=(type==='grn'?canGRV:type==='gin'?canGIV:isSA)&&isPend;
     const vNo=type==='grn'?v.grvNo:type==='gin'?v.givNo:v.trnNo;
     const title=type==='grn'?'Goods Receipt Note':type==='gin'?'Goods Issue Note':'Stock Transfer';
+    if(detail.autoPrint){setTimeout(()=>window.print(),400);}
     return React.createElement('div',null,
-      React.createElement('div',{onClick:()=>setDetail(null),style:{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'var(--blue)',cursor:'pointer',marginBottom:14,padding:'5px 14px',background:'var(--blue-light)',borderRadius:6,border:'1px solid var(--blue-mid)'}},React.createElement(Ic,{n:'back',s:13}),' Back to Approvals'),
+      React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8,marginBottom:14}},
+        React.createElement('div',{onClick:()=>setDetail(null),style:{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'var(--blue)',cursor:'pointer',padding:'5px 14px',background:'var(--blue-light)',borderRadius:6,border:'1px solid var(--blue-mid)'}},React.createElement(Ic,{n:'back',s:13}),' Back to Approvals'),
+        React.createElement('button',{className:'btn btn-outline btn-sm no-print',onClick:()=>window.print()},React.createElement(Ic,{n:'print',s:13}),' Print')
+      ),
       React.createElement('div',{className:'ph'},
         React.createElement('div',{className:'ph-l'},
           React.createElement('h1',null,vNo||'Detail'),
@@ -4218,7 +4353,9 @@ function Approvals(){
         {l:'Pending Transfers',v:pendTRN.length,c:'#0d9488',ico:'🔄',fn:()=>setTab('transfer')},
         {l:'Pending CON',v:pendCON.length,c:'#7c3aed',ico:'🔥',fn:()=>setTab('con')},
         {l:'Pending PRO',v:pendPRO.length,c:'#0d9488',ico:'🏭',fn:()=>setTab('pro')},
-        {l:'Approved Today',v:[...allGRV,...allGIV,...allTRN,...allCON,...allPRO].filter(x=>x.status==='Approved'&&(x.approvedAt||'').startsWith(today())).length,c:'var(--green)',ico:'✅',fn:()=>setTab('history')},
+        {l:'Pending MR',v:pendMR.length,c:'var(--purple)',ico:'📋',fn:()=>setTab('mr')},
+        {l:'Pending DMG',v:pendDMG.length,c:'var(--red)',ico:'⚠️',fn:()=>setTab('dmg')},
+        {l:'Approved Today',v:[...allGRV,...allGIV,...allTRN,...allCON,...allPRO,...allMR,...allDMG].filter(x=>x.status==='Approved'&&(x.approvedAt||'').startsWith(today())).length,c:'var(--green)',ico:'✅',fn:()=>setTab('history')},
       ].map(k=>React.createElement('div',{key:k.l,className:'card',style:{display:'flex',alignItems:'center',gap:11,borderLeft:'3px solid '+k.c,padding:'12px 14px',cursor:'pointer'},onClick:k.fn},
         React.createElement('div',{style:{fontSize:22}},k.ico),
         React.createElement('div',null,React.createElement('div',{style:{fontSize:20,fontWeight:800,color:k.c}},String(k.v)),React.createElement('div',{style:{fontSize:11,color:'var(--txt2)'}},k.l))
@@ -4230,6 +4367,8 @@ function Approvals(){
       isSA&&React.createElement('div',{className:'tab'+(tab==='transfer'?' on':''),onClick:()=>setTab('transfer')},'🔄 Transfers',pendTRN.length>0&&React.createElement('span',{style:{background:'var(--red)',color:'#fff',borderRadius:20,padding:'1px 6px',fontSize:9,fontWeight:700,marginLeft:4}},String(pendTRN.length))),
     React.createElement('div',{className:'tab'+(tab==='con'?' on':''),onClick:()=>setTab('con')},'🔥 Consumption',pendCON.length>0&&React.createElement('span',{style:{background:'var(--red)',color:'#fff',borderRadius:20,padding:'1px 6px',fontSize:9,fontWeight:700,marginLeft:4}},String(pendCON.length))),
     React.createElement('div',{className:'tab'+(tab==='pro'?' on':''),onClick:()=>setTab('pro')},'🏭 Production',pendPRO.length>0&&React.createElement('span',{style:{background:'var(--red)',color:'#fff',borderRadius:20,padding:'1px 6px',fontSize:9,fontWeight:700,marginLeft:4}},String(pendPRO.length))),
+    React.createElement('div',{className:'tab'+(tab==='mr'?' on':''),onClick:()=>setTab('mr')},'📋 Mat. Request',pendMR.length>0&&React.createElement('span',{style:{background:'var(--red)',color:'#fff',borderRadius:20,padding:'1px 6px',fontSize:9,fontWeight:700,marginLeft:4}},String(pendMR.length))),
+    React.createElement('div',{className:'tab'+(tab==='dmg'?' on':''),onClick:()=>setTab('dmg')},'⚠ Damaged',pendDMG.length>0&&React.createElement('span',{style:{background:'var(--red)',color:'#fff',borderRadius:20,padding:'1px 6px',fontSize:9,fontWeight:700,marginLeft:4}},String(pendDMG.length))),
       React.createElement('div',{className:'tab'+(tab==='history'?' on':''),onClick:()=>setTab('history')},'📋 History')
     ),
     tab==='grn'&&canGRV&&React.createElement('div',{className:'tw'},React.createElement('table',null,TblHd('grn'),React.createElement('tbody',null,allGRV.length===0?React.createElement('tr',null,React.createElement('td',{colSpan:8},React.createElement('div',{className:'te'},'No GRN records'))):allGRV.map(v=>VRow(v,'grn'))))),
@@ -4289,11 +4428,67 @@ function Approvals(){
         )
       )
     ),
+    tab==='mr'&&React.createElement('div',{className:'tw'},
+      React.createElement('table',null,
+        React.createElement('thead',null,React.createElement('tr',null,['MR No.','Date','Warehouse','Department','Priority','Items','Status','Approved By','Action'].map(h=>React.createElement('th',{key:h},h)))),
+        React.createElement('tbody',null,allMR.length===0
+          ? React.createElement('tr',null,React.createElement('td',{colSpan:9},React.createElement('div',{className:'te'},'No material requests')))
+          : allMR.map(v=>{
+            const isPend=v.status==='Pending Approval';
+            const canAct=(isSA||me?.canApproveGIV)&&isPend;
+            return React.createElement('tr',{key:v.id,style:{background:isPend?'#f5f3ff':'',cursor:'pointer'},onClick:()=>setDetail({type:'mr',data:v})},
+              React.createElement('td',null,React.createElement('span',{style:{color:'var(--purple)',fontWeight:700,fontFamily:'var(--mono)',fontSize:11}},v.mrNo)),
+              React.createElement('td',null,fmtDate(v.date)),
+              React.createElement('td',null,React.createElement(WhBadge,{whId:v.whId})),
+              React.createElement('td',null,React.createElement('strong',null,v.department||'-')),
+              React.createElement('td',null,React.createElement('span',{className:'badge',style:{background:v.priority==='Critical'?'var(--red-light)':v.priority==='Urgent'?'var(--amber-light)':'var(--blue-light)',color:v.priority==='Critical'?'var(--red)':v.priority==='Urgent'?'var(--amber)':'var(--blue)'}},v.priority||'Normal')),
+              React.createElement('td',null,String(v.totalItems||v.items?.length||0)),
+              React.createElement('td',null,React.createElement('span',{style:{marginRight:3}},isPend?'⏳':v.status==='Approved'?'✅':'❌'),React.createElement(Badge,{c:v.status==='Approved'||v.status==='Issued'?'green':v.status==='Rejected'?'red':'amber'},v.status)),
+              React.createElement('td',null,v.approvedBy||'—'),
+              React.createElement('td',{onClick:e=>e.stopPropagation()},React.createElement('div',{style:{display:'flex',gap:5}},
+                React.createElement('button',{className:'btn btn-outline btn-xs',onClick:()=>setDetail({type:'mr',data:v})},React.createElement(Ic,{n:'eye',s:11}),' View'),
+                canAct&&React.createElement('button',{className:'btn btn-success btn-xs',onClick:()=>{if(type==='mr'){}; const a=db.g('matreq')||[];const idx2=a.findIndex(x=>x.id===v.id);if(idx2>=0){a[idx2]={...a[idx2],status:'Approved',approvedBy:me.name,approvedAt:ts()};db.s('matreq',a);}toast('MR Approved','success');reloadPage();}},'\u2713 Approve'),
+                canAct&&React.createElement('button',{className:'btn btn-danger btn-xs',onClick:()=>openReject('mr',v.id)},'\u2715')
+              ))
+            );
+          })
+        )
+      )
+    ),
+    tab==='dmg'&&React.createElement('div',{className:'tw'},
+      React.createElement('table',null,
+        React.createElement('thead',null,React.createElement('tr',null,['DMG No.','Date','Warehouse','Damage Type','Disposal','Items','Total Loss','Status','Approved By','Action'].map(h=>React.createElement('th',{key:h},h)))),
+        React.createElement('tbody',null,allDMG.length===0
+          ? React.createElement('tr',null,React.createElement('td',{colSpan:10},React.createElement('div',{className:'te'},'No damage reports')))
+          : allDMG.map(v=>{
+            const isPend=v.status==='Pending Approval';
+            const canAct=isSA&&isPend;
+            const sym2=settSvc.get().currencySymbol||'QR';
+            return React.createElement('tr',{key:v.id,style:{background:isPend?'var(--red-light)':'',cursor:'pointer'},onClick:()=>setDetail({type:'dmg',data:v})},
+              React.createElement('td',null,React.createElement('span',{style:{color:'var(--red)',fontWeight:700,fontFamily:'var(--mono)',fontSize:11}},v.dmgNo)),
+              React.createElement('td',null,fmtDate(v.date)),
+              React.createElement('td',null,React.createElement(WhBadge,{whId:v.whId})),
+              React.createElement('td',null,React.createElement('span',{className:'badge b-red'},v.damageType||'-')),
+              React.createElement('td',null,v.disposalMethod||'-'),
+              React.createElement('td',null,String(v.totalItems||v.items?.length||0)),
+              React.createElement('td',null,React.createElement('strong',{style:{color:'var(--red)'}},sym2+' '+fmt(v.totalValue||0,2))),
+              React.createElement('td',null,React.createElement('span',{style:{marginRight:3}},isPend?'⏳':v.status==='Approved'?'✅':'❌'),React.createElement(Badge,{c:v.status==='Approved'?'green':v.status==='Rejected'?'red':'amber'},v.status)),
+              React.createElement('td',null,v.approvedBy||'—'),
+              React.createElement('td',{onClick:e=>e.stopPropagation()},React.createElement('div',{style:{display:'flex',gap:5}},
+                React.createElement('button',{className:'btn btn-outline btn-xs',onClick:()=>setDetail({type:'dmg',data:v})},React.createElement(Ic,{n:'eye',s:11}),' View'),
+                canAct&&React.createElement('button',{className:'btn btn-success btn-xs',onClick:()=>{dmgSvc.approve(v.id,me.name);toast('Damage report approved — stock deducted','success');reloadPage();}},'\u2713 Approve'),
+                canAct&&React.createElement('button',{className:'btn btn-danger btn-xs',onClick:()=>openReject('dmg',v.id)},'\u2715')
+              ))
+            );
+          })
+        )
+      )
+    ),
     tab==='history'&&React.createElement('div',{className:'tw'},
       React.createElement('table',null,
         React.createElement('thead',null,React.createElement('tr',null,['Voucher No.','Type','Date','Warehouse','Items','Status','Approved By','Action'].map(h=>React.createElement('th',{key:h},h)))),
         React.createElement('tbody',null,
-          [...allGRV.map(g=>({...g,dtype:'grn',vNo:g.grvNo,wId:g.whId})),...allGIV.map(g=>({...g,dtype:'gin',vNo:g.givNo,wId:g.whId})),...allTRN.map(t=>({...t,dtype:'transfer',vNo:t.trnNo,wId:t.fromWhId})),...allCON.map(v=>({...v,dtype:'con',vNo:v.conNo,wId:v.whId})),...allPRO.map(v=>({...v,dtype:'pro',vNo:v.proNo,wId:v.whId}))]
+          [...allGRV.map(g=>({...g,dtype:'grn',vNo:g.grvNo,wId:g.whId})),...allGIV.map(g=>({...g,dtype:'gin',vNo:g.givNo,wId:g.whId})),...allTRN.map(t=>({...t,dtype:'transfer',vNo:t.trnNo,wId:t.fromWhId})),...allCON.map(v=>({...v,dtype:'con',vNo:v.conNo,wId:v.whId})),...allPRO.map(v=>({...v,dtype:'pro',vNo:v.proNo,wId:v.whId})),...allMR.map(v=>({...v,dtype:'mr',vNo:v.mrNo,wId:v.whId})),...allDMG.map(v=>({...v,dtype:'dmg',vNo:v.dmgNo,wId:v.whId}))]
           .sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt))
           .map(v=>React.createElement('tr',{key:v.id+v.dtype,style:{cursor:'pointer'},onClick:()=>setDetail({type:v.dtype,data:v})},
             React.createElement('td',null,React.createElement('span',{style:{fontWeight:700,fontFamily:'var(--mono)',fontSize:11,color:v.dtype==='grn'?'var(--blue)':v.dtype==='gin'?'var(--amber)':'#0d9488'}},v.vNo||'\u2014')),
@@ -4303,12 +4498,369 @@ function Approvals(){
             React.createElement('td',null,String((v.items||[]).length)),
             React.createElement('td',null,React.createElement('span',{style:{marginRight:3}},si(v.status)),React.createElement(Badge,{c:sc(v.status)},v.status)),
             React.createElement('td',null,v.approvedBy||'\u2014'),
-            React.createElement('td',null,React.createElement('button',{className:'btn btn-outline btn-xs',onClick:e=>{e.stopPropagation();setDetail({type:v.dtype,data:v});}},React.createElement(Ic,{n:'eye',s:11}),' View'))
+            React.createElement('td',null,React.createElement('div',{style:{display:'flex',gap:4}},
+              React.createElement('button',{className:'btn btn-outline btn-xs',onClick:e=>{e.stopPropagation();setDetail({type:v.dtype,data:v});}},React.createElement(Ic,{n:'eye',s:11}),' View'),
+              React.createElement('button',{className:'btn btn-outline btn-xs',onClick:e=>{e.stopPropagation();setDetail({type:v.dtype,data:v,autoPrint:true});}},React.createElement(Ic,{n:'print',s:11}),' Print')
+            ))
           ))
         )
       )
     ),
     React.createElement('div',{style:{marginTop:8,fontSize:11,color:'var(--txt3)',textAlign:'center'}},'💡 Click any row to view full details and approve/reject')
+  );
+}
+
+// ════════════════════════════════════════
+//  MATERIAL REQUEST
+// ════════════════════════════════════════
+function MaterialRequest(){
+  const {toast,reload,whId:_mrWhId,isSA:_mrSA,setModal,user:_mrUser}=useCtx();
+  const [tab,setTab]=useState('list');
+  const [viewMr,setViewMr]=useState(null);
+  const [q,setQ]=useState('');
+  const sett=settSvc.get();const sym=sett.currencySymbol||'QR';
+  const whs=whSvc.getAll();
+  const [selWh,setSelWh]=useState(_mrWhId||whs[0]?.id||'');
+  const [mrs,setMrs]=useState(mrSvc.getAll(_mrWhId));
+  const [allItems,setAllItems]=useState(itemSvc.getAll(selWh||null));
+  const DEPTS=['Maintenance Dept.','Production Dept.','Electrical Dept.','Instrumentation Dept.','Safety Dept.','Quality Dept.','Administration'];
+  const PRIORITIES=['Normal','Urgent','Critical'];
+  const reloadMrs=()=>{setMrs(mrSvc.getAll(_mrWhId));setAllItems(itemSvc.getAll(selWh||null));reload();};
+
+  const blankForm=()=>({
+    date:today(),requestedBy:_mrUser?.name||'',department:'',priority:'Normal',purpose:'',remarks:'',whId:selWh,
+    items:[{itemId:'',itemName:'',unit:'NOS',availQty:0,reqQty:'',remarks:''}],
+  });
+  const [form,setForm]=useState(blankForm);
+  const sf=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const setIR=(idx,k,v)=>{
+    const rows=[...form.items];rows[idx]={...rows[idx],[k]:v};
+    if(k==='itemId'){const item=allItems.find(i=>i.id===v);if(item){rows[idx].itemName=item.name;rows[idx].unit=item.unit;rows[idx].availQty=stockSvc.getQty(item.id,item.whId||selWh);}}
+    setForm(p=>({...p,items:rows}));
+  };
+  const addRow=()=>setForm(p=>({...p,items:[...p.items,{itemId:'',itemName:'',unit:'NOS',availQty:0,reqQty:'',remarks:''}]}));
+  const removeRow=idx=>setForm(p=>({...p,items:p.items.filter((_,i)=>i!==idx)}));
+
+  const submit=()=>{
+    if(!form.department){toast('Select a department','error');return;}
+    const valid=form.items.filter(r=>r.itemId&&r.reqQty&&Number(r.reqQty)>0);
+    if(!valid.length){toast('Add at least one item with quantity','error');return;}
+    mrSvc.create({...form,items:valid,totalItems:valid.length,whId:selWh});
+    toast('Material Request submitted — Pending Approval','success');
+    reloadMrs();setForm(blankForm());setTab('list');
+  };
+
+  const filtered=mrs.filter(g=>!q||(g.mrNo||'').toLowerCase().includes(q.toLowerCase())||(g.department||'').toLowerCase().includes(q.toLowerCase()));
+
+  const printVoucher=(mr)=>{setViewMr(mr);setTab('view');setTimeout(()=>window.print(),500);};
+
+  if(tab==='view'&&viewMr)return React.createElement('div',null,
+    React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8,marginBottom:14}},
+      React.createElement('div',{onClick:()=>setTab('list'),style:{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'var(--blue)',cursor:'pointer',padding:'5px 14px',background:'var(--blue-light)',borderRadius:6,border:'1px solid var(--blue-mid)',}},React.createElement(Ic,{n:'back',s:13}),' Back'),
+      React.createElement('button',{className:'btn btn-outline btn-sm no-print',onClick:()=>window.print()},React.createElement(Ic,{n:'print',s:13}),' Print')
+    ),
+    React.createElement('div',{className:'voucher'},
+      React.createElement('div',{className:'voucher-head'},
+        React.createElement('div',null,React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'var(--navy)',marginBottom:3}},sett.companyName||'GENERAL STORE'),React.createElement('div',{className:'voucher-title'},'Material Request (MR)')),
+        React.createElement('div',{style:{textAlign:'right'}},React.createElement('div',{className:'voucher-no',style:{color:'var(--purple)'}},viewMr.mrNo),React.createElement('div',{style:{fontSize:12,color:'var(--txt2)',marginTop:4}},fmtDate(viewMr.date)),React.createElement(WhBadge,{whId:viewMr.whId}))
+      ),
+      React.createElement('div',{className:'voucher-meta'},
+        [['Requested By',viewMr.requestedBy||'-'],['Department',viewMr.department||'-'],['Priority',viewMr.priority||'-'],['Purpose',viewMr.purpose||'-'],['Remarks',viewMr.remarks||'-']]
+        .map(([l,v])=>React.createElement('div',{key:l,className:'voucher-field'},React.createElement('div',{className:'voucher-field-lbl'},l),React.createElement('div',{className:'voucher-field-val'},v)))
+      ),
+      React.createElement('div',{className:'tw',style:{marginBottom:14}},
+        React.createElement('table',null,
+          React.createElement('thead',null,React.createElement('tr',null,['#','Code','Item Name','Category','UOM','Available','Qty Requested','Remarks'].map(h=>React.createElement('th',{key:h},h)))),
+          React.createElement('tbody',null,
+            (viewMr.items||[]).map((row,i)=>{
+              const item=allItems.find(x=>x.id===row.itemId)||{code:'-',name:row.itemName||'-',category:''};
+              const avail=stockSvc.getQty(row.itemId,viewMr.whId);
+              return React.createElement('tr',{key:i},
+                React.createElement('td',null,String(i+1)),
+                React.createElement('td',null,React.createElement('span',{style:{fontFamily:'var(--mono)',fontSize:11,fontWeight:600}},item.code||'-')),
+                React.createElement('td',null,React.createElement('span',{style:{fontWeight:600}},item.name||row.itemName||'-')),
+                React.createElement('td',null,React.createElement(CatBadge,{catId:item.category})),
+                React.createElement('td',null,row.unit||'-'),
+                React.createElement('td',null,React.createElement('span',{style:{fontWeight:700,color:avail>0?'var(--green)':'var(--red)'}},String(avail))),
+                React.createElement('td',null,React.createElement('span',{style:{fontWeight:700,color:'var(--blue)',fontSize:14}},String(row.reqQty||0))),
+                React.createElement('td',null,row.remarks||'-')
+              );
+            })
+          )
+        )
+      ),
+      viewMr.status==='Approved'&&React.createElement('div',{className:'alert alert-green'},React.createElement(Ic,{n:'check',s:13}),' Approved by ',React.createElement('strong',null,viewMr.approvedBy||'-'),' on ',fmtDate(viewMr.approvedAt)),
+      viewMr.status==='Issued'&&React.createElement('div',{className:'alert alert-blue'},'✅ Issued by ',React.createElement('strong',null,viewMr.issuedBy||'-'),' on ',fmtDate(viewMr.issuedAt)),
+      viewMr.status==='Rejected'&&React.createElement('div',{className:'alert alert-red'},React.createElement(Ic,{n:'x',s:13}),' Rejected: ',viewMr.rejectReason||'-'),
+      React.createElement('div',{className:'voucher-sign'},['Requested By','Verified By','Approved By'].map(l=>React.createElement('div',{key:l,className:'vsign'},React.createElement('div',{className:'vsign-line'}),React.createElement('div',{className:'vsign-lbl'},l))))
+    )
+  );
+
+  if(tab==='form')return React.createElement('div',null,
+    React.createElement('div',{className:'ph'},
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'New Material Request'),React.createElement('p',null,'Submit a request for materials')),
+      React.createElement('div',{className:'ph-r'},
+        React.createElement('button',{className:'btn btn-outline',onClick:()=>{setForm(blankForm());setTab('list');}},'← Cancel'),
+        React.createElement('button',{className:'btn btn-primary',onClick:submit},React.createElement(Ic,{n:'check',s:13,c:'#fff'}),' Submit Request')
+      )
+    ),
+    React.createElement('div',{className:'card',style:{marginBottom:12}},
+      React.createElement('div',{className:'frow3'},
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Date *'),React.createElement('input',{className:'fi',type:'date',value:form.date,onChange:e=>sf('date',e.target.value)})),
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Requested By'),React.createElement('input',{className:'fi',value:form.requestedBy,onChange:e=>sf('requestedBy',e.target.value)})),
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Priority'),React.createElement('select',{className:'fi',value:form.priority,onChange:e=>sf('priority',e.target.value)},PRIORITIES.map(p=>React.createElement('option',{key:p,value:p},p))))
+      ),
+      React.createElement('div',{className:'frow3'},
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Department *'),React.createElement('select',{className:'fi',value:form.department,onChange:e=>sf('department',e.target.value)},React.createElement('option',{value:''},'Select Department'),DEPTS.map(d=>React.createElement('option',{key:d,value:d},d)))),
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Purpose / Work Order'),React.createElement('input',{className:'fi',value:form.purpose,onChange:e=>sf('purpose',e.target.value),placeholder:'e.g. Pump repair, Panel upgrade...'})),
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Remarks'),React.createElement('input',{className:'fi',value:form.remarks,onChange:e=>sf('remarks',e.target.value)}))
+      )
+    ),
+    React.createElement('div',{className:'card'},
+      React.createElement('div',{style:{fontWeight:700,fontSize:13,color:'var(--navy)',marginBottom:10}},'Requested Items'),
+      React.createElement('div',{style:{overflowX:'auto'}},
+        React.createElement('table',{style:{width:'100%',borderCollapse:'collapse',minWidth:650}},
+          React.createElement('thead',null,React.createElement('tr',{style:{background:'var(--blue-light)'}},
+            ['Item','UOM','Available','Qty Required','Remarks',''].map(h=>React.createElement('th',{key:h,style:{padding:'8px 10px',fontSize:10,fontWeight:700,textTransform:'uppercase',color:'var(--blue)',textAlign:'left',borderBottom:'2px solid var(--blue-mid)'}},h))
+          )),
+          React.createElement('tbody',null,
+            form.items.map((row,idx)=>React.createElement('tr',{key:idx,style:{borderBottom:'1px solid var(--border)'}},
+              React.createElement('td',{style:{padding:'6px 6px 6px 0'}},
+                React.createElement('select',{className:'fi',style:{fontSize:12,padding:'6px 8px'},value:row.itemId,onChange:e=>setIR(idx,'itemId',e.target.value)},
+                  React.createElement('option',{value:''},'Select item...'),
+                  allItems.map(i=>React.createElement('option',{key:i.id,value:i.id},i.code+' — '+i.name))
+                )
+              ),
+              React.createElement('td',{style:{padding:'6px'}},React.createElement('span',{style:{fontSize:12,color:'var(--txt2)'}},row.unit||'-')),
+              React.createElement('td',{style:{padding:'6px'}},React.createElement('span',{style:{fontWeight:700,fontSize:13,color:row.availQty>0?'var(--green)':'var(--red)'}},String(row.availQty))),
+              React.createElement('td',{style:{padding:'6px'}},React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px',width:90},type:'number',min:1,value:row.reqQty,onChange:e=>setIR(idx,'reqQty',e.target.value),placeholder:'0'})),
+              React.createElement('td',{style:{padding:'6px'}},React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px',minWidth:120},value:row.remarks||'',onChange:e=>setIR(idx,'remarks',e.target.value),placeholder:'Note...'})),
+              React.createElement('td',{style:{padding:'6px'}},React.createElement('button',{className:'btn btn-danger btn-icon',style:{width:28,height:28,minWidth:28,padding:0},onClick:()=>removeRow(idx),disabled:form.items.length===1},React.createElement(Ic,{n:'x',s:12})))
+            ))
+          )
+        )
+      ),
+      React.createElement('div',{style:{marginTop:12,paddingTop:10,borderTop:'1px solid var(--border)'}},
+        React.createElement('button',{className:'btn btn-outline btn-sm',onClick:addRow},React.createElement(Ic,{n:'plus',s:12}),' Add Item')
+      )
+    )
+  );
+
+  return React.createElement('div',null,
+    React.createElement('div',{className:'ph'},
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Material Request'),React.createElement('p',null,String(mrs.length)+' requests')),
+      React.createElement('div',{className:'ph-r'},
+        _mrSA&&React.createElement('select',{className:'fs',value:selWh,onChange:e=>{setSelWh(e.target.value);setMrs(mrSvc.getAll(e.target.value||null));}},whs.map(w=>React.createElement('option',{key:w.id,value:w.id},w.name))),
+        React.createElement('button',{className:'btn btn-primary',onClick:()=>{setForm(blankForm());setTab('form');}},React.createElement(Ic,{n:'plus',s:13,c:'#fff'}),' + New Request')
+      )
+    ),
+    React.createElement('div',{className:'sb'},
+      React.createElement('div',{className:'si'},React.createElement('div',{className:'si-ico'},React.createElement(Ic,{n:'search',s:13,c:'var(--txt3)'})),React.createElement('input',{placeholder:'Search MR No. / Dept...',value:q,onChange:e=>setQ(e.target.value)}))
+    ),
+    React.createElement('div',{className:'tw'},
+      React.createElement('table',null,
+        React.createElement('thead',null,React.createElement('tr',null,['MR No.','Date',_mrSA&&'Warehouse','Department','Priority','Purpose','Items','Status','Action'].filter(Boolean).map(h=>React.createElement('th',{key:h},h)))),
+        React.createElement('tbody',null,
+          filtered.length===0
+            ? React.createElement('tr',null,React.createElement('td',{colSpan:9},React.createElement('div',{className:'te'},'No material requests yet.')))
+            : filtered.map(v=>React.createElement('tr',{key:v.id,style:{cursor:'pointer'},onClick:()=>{setViewMr(v);setTab('view');}},
+              React.createElement('td',null,React.createElement('span',{style:{color:'var(--purple)',fontWeight:700,fontFamily:'var(--mono)',fontSize:11}},v.mrNo)),
+              React.createElement('td',null,fmtDate(v.date)),
+              _mrSA&&React.createElement('td',null,React.createElement(WhBadge,{whId:v.whId})),
+              React.createElement('td',null,React.createElement('strong',null,v.department||'-')),
+              React.createElement('td',null,React.createElement('span',{className:'badge',style:{background:v.priority==='Critical'?'var(--red-light)':v.priority==='Urgent'?'var(--amber-light)':'var(--blue-light)',color:v.priority==='Critical'?'var(--red)':v.priority==='Urgent'?'var(--amber)':'var(--blue)'}},v.priority||'Normal')),
+              React.createElement('td',null,v.purpose||'-'),
+              React.createElement('td',null,String(v.totalItems||v.items?.length||0)+' items'),
+              React.createElement('td',null,React.createElement(Badge,{c:v.status==='Approved'||v.status==='Issued'?'green':v.status==='Rejected'?'red':'amber'},v.status)),
+              React.createElement('td',{onClick:e=>e.stopPropagation()},React.createElement('div',{style:{display:'flex',gap:4}},
+                React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>{setViewMr(v);setTab('view');}},React.createElement(Ic,{n:'eye',s:12})),
+                React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>printVoucher(v)},React.createElement(Ic,{n:'print',s:12}))
+              ))
+            ))
+        )
+      )
+    )
+  );
+}
+
+// ════════════════════════════════════════
+//  DAMAGED PRODUCTS
+// ════════════════════════════════════════
+function DamagedProducts(){
+  const {toast,reload,whId:_dmgWhId,isSA:_dmgSA,setModal,user:_dmgUser}=useCtx();
+  const [tab,setTab]=useState('list');
+  const [viewDmg,setViewDmg]=useState(null);
+  const [q,setQ]=useState('');
+  const sett=settSvc.get();const sym=sett.currencySymbol||'QR';
+  const whs=whSvc.getAll();
+  const [selWh,setSelWh]=useState(_dmgWhId||whs[0]?.id||'');
+  const [dmgs,setDmgs]=useState(dmgSvc.getAll(_dmgWhId));
+  const [allItems,setAllItems]=useState(itemSvc.getAll(selWh||null));
+  const DAMAGE_TYPES=['Breakage','Expired','Water Damage','Fire Damage','Corrosion','Manufacturing Defect','Handling Damage','Other'];
+  const DISPOSALS=['Write-Off','Return to Supplier','Scrap Sale','Repair & Return','Other'];
+  const reloadDmgs=()=>{setDmgs(dmgSvc.getAll(_dmgWhId));setAllItems(itemSvc.getAll(selWh||null));reload();};
+
+  const blankForm=()=>({
+    date:today(),reportedBy:_dmgUser?.name||'',damageType:'Breakage',disposalMethod:'Write-Off',remarks:'',whId:selWh,
+    items:[{itemId:'',itemName:'',unit:'NOS',availQty:0,qty:'',remarks:''}],
+  });
+  const [form,setForm]=useState(blankForm);
+  const sf=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const setIR=(idx,k,v)=>{
+    const rows=[...form.items];rows[idx]={...rows[idx],[k]:v};
+    if(k==='itemId'){const item=allItems.find(i=>i.id===v);if(item){rows[idx].itemName=item.name;rows[idx].unit=item.unit;rows[idx].availQty=stockSvc.getQty(item.id,item.whId||selWh);}}
+    setForm(p=>({...p,items:rows}));
+  };
+  const addRow=()=>setForm(p=>({...p,items:[...p.items,{itemId:'',itemName:'',unit:'NOS',availQty:0,qty:'',remarks:''}]}));
+  const removeRow=idx=>setForm(p=>({...p,items:p.items.filter((_,i)=>i!==idx)}));
+
+  const submit=()=>{
+    const valid=form.items.filter(r=>r.itemId&&r.qty&&Number(r.qty)>0);
+    if(!valid.length){toast('Add at least one damaged item','error');return;}
+    for(const row of valid){
+      if(Number(row.qty)>Number(row.availQty)){toast('Qty damaged cannot exceed available stock for: '+(allItems.find(i=>i.id===row.itemId)?.name||'-'),'error');return;}
+    }
+    dmgSvc.create({...form,items:valid,totalItems:valid.length,totalValue:valid.reduce((s,row)=>{const item=allItems.find(i=>i.id===row.itemId);return s+(item?.costPrice||0)*Number(row.qty);},0),whId:selWh});
+    toast('Damaged product report submitted — Pending Approval','success');
+    reloadDmgs();setForm(blankForm());setTab('list');
+  };
+
+  const filtered=dmgs.filter(g=>!q||(g.dmgNo||'').toLowerCase().includes(q.toLowerCase())||(g.damageType||'').toLowerCase().includes(q.toLowerCase()));
+
+  const printVoucher=(dmg)=>{setViewDmg(dmg);setTab('view');setTimeout(()=>window.print(),500);};
+
+  if(tab==='view'&&viewDmg)return React.createElement('div',null,
+    React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8,marginBottom:14}},
+      React.createElement('div',{onClick:()=>setTab('list'),style:{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'var(--blue)',cursor:'pointer',padding:'5px 14px',background:'var(--blue-light)',borderRadius:6,border:'1px solid var(--blue-mid)'}},React.createElement(Ic,{n:'back',s:13}),' Back'),
+      React.createElement('button',{className:'btn btn-outline btn-sm no-print',onClick:()=>window.print()},React.createElement(Ic,{n:'print',s:13}),' Print')
+    ),
+    React.createElement('div',{className:'voucher'},
+      React.createElement('div',{className:'voucher-head'},
+        React.createElement('div',null,React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'var(--navy)',marginBottom:3}},sett.companyName||'GENERAL STORE'),React.createElement('div',{className:'voucher-title'},'Damaged Products Report (DMG)')),
+        React.createElement('div',{style:{textAlign:'right'}},React.createElement('div',{className:'voucher-no',style:{color:'var(--red)'}},viewDmg.dmgNo),React.createElement('div',{style:{fontSize:12,color:'var(--txt2)',marginTop:4}},fmtDate(viewDmg.date)),React.createElement(WhBadge,{whId:viewDmg.whId}))
+      ),
+      React.createElement('div',{className:'voucher-meta'},
+        [['Reported By',viewDmg.reportedBy||'-'],['Damage Type',viewDmg.damageType||'-'],['Disposal Method',viewDmg.disposalMethod||'-'],['Remarks',viewDmg.remarks||'-'],['Total Value',sym+' '+fmt(viewDmg.totalValue||0,2)]]
+        .map(([l,v])=>React.createElement('div',{key:l,className:'voucher-field'},React.createElement('div',{className:'voucher-field-lbl'},l),React.createElement('div',{className:'voucher-field-val'},v)))
+      ),
+      React.createElement('div',{className:'tw',style:{marginBottom:14}},
+        React.createElement('table',null,
+          React.createElement('thead',null,React.createElement('tr',null,['#','Code','Item Name','Category','UOM','Damaged Qty','Unit Cost','Total Loss','Notes'].map(h=>React.createElement('th',{key:h},h)))),
+          React.createElement('tbody',null,
+            (viewDmg.items||[]).map((row,i)=>{
+              const item=allItems.find(x=>x.id===row.itemId)||{code:'-',name:row.itemName||'-',category:'',costPrice:0};
+              return React.createElement('tr',{key:i},
+                React.createElement('td',null,String(i+1)),
+                React.createElement('td',null,React.createElement('span',{style:{fontFamily:'var(--mono)',fontSize:11,fontWeight:600}},item.code||'-')),
+                React.createElement('td',null,React.createElement('span',{style:{fontWeight:600}},item.name||'-')),
+                React.createElement('td',null,React.createElement(CatBadge,{catId:item.category})),
+                React.createElement('td',null,row.unit||'-'),
+                React.createElement('td',null,React.createElement('span',{style:{fontWeight:700,color:'var(--red)',fontSize:14}},String(row.qty||0))),
+                React.createElement('td',null,sym+' '+fmt(item.costPrice||0)),
+                React.createElement('td',null,React.createElement('strong',{style:{color:'var(--red)'}},sym+' '+fmt((item.costPrice||0)*Number(row.qty||0),2))),
+                React.createElement('td',null,row.remarks||'-')
+              );
+            })
+          ),
+          React.createElement('tfoot',null,React.createElement('tr',{style:{background:'var(--red-light)'}},
+            React.createElement('td',{colSpan:7,style:{padding:'8px 14px',fontWeight:700,color:'var(--red)'}},'Total Loss:'),
+            React.createElement('td',{colSpan:2,style:{padding:'8px 14px',fontWeight:800,color:'var(--red)',fontSize:13}},sym+' '+fmt(viewDmg.totalValue||0,2))
+          ))
+        )
+      ),
+      viewDmg.status==='Approved'&&React.createElement('div',{className:'alert alert-green'},React.createElement(Ic,{n:'check',s:13}),' Approved by ',React.createElement('strong',null,viewDmg.approvedBy||'-'),' on ',fmtDate(viewDmg.approvedAt)),
+      viewDmg.status==='Rejected'&&React.createElement('div',{className:'alert alert-red'},React.createElement(Ic,{n:'x',s:13}),' Rejected: ',viewDmg.rejectReason||'-'),
+      React.createElement('div',{className:'voucher-sign'},['Reported By','Verified By','Approved By'].map(l=>React.createElement('div',{key:l,className:'vsign'},React.createElement('div',{className:'vsign-line'}),React.createElement('div',{className:'vsign-lbl'},l))))
+    )
+  );
+
+  if(tab==='form')return React.createElement('div',null,
+    React.createElement('div',{className:'ph'},
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Report Damaged Products'),React.createElement('p',null,'Record items that are damaged, expired or unserviceable')),
+      React.createElement('div',{className:'ph-r'},
+        React.createElement('button',{className:'btn btn-outline',onClick:()=>{setForm(blankForm());setTab('list');}},'← Cancel'),
+        React.createElement('button',{className:'btn btn-danger',onClick:submit},React.createElement(Ic,{n:'alert',s:13}),' Submit Damage Report')
+      )
+    ),
+    React.createElement('div',{className:'alert alert-amber',style:{marginBottom:12}},React.createElement(Ic,{n:'alert',s:13}),' On approval, the damaged quantities will be deducted from stock automatically.'),
+    React.createElement('div',{className:'card',style:{marginBottom:12}},
+      React.createElement('div',{className:'frow3'},
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Date *'),React.createElement('input',{className:'fi',type:'date',value:form.date,onChange:e=>sf('date',e.target.value)})),
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Reported By'),React.createElement('input',{className:'fi',value:form.reportedBy,onChange:e=>sf('reportedBy',e.target.value)})),
+        React.createElement('div',{className:'fg'},_dmgSA?React.createElement('div',null,React.createElement('label',{className:'flbl'},'Warehouse'),React.createElement('select',{className:'fi',value:selWh,onChange:e=>{setSelWh(e.target.value);sf('whId',e.target.value);}},whs.map(w=>React.createElement('option',{key:w.id,value:w.id},w.name)))):React.createElement('div',null,React.createElement('label',{className:'flbl'},'Warehouse'),React.createElement('input',{className:'fi',value:whSvc.getById(selWh)?.name||'-',readOnly:true,style:{background:'var(--off2)'}})))
+      ),
+      React.createElement('div',{className:'frow3'},
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Damage Type'),React.createElement('select',{className:'fi',value:form.damageType,onChange:e=>sf('damageType',e.target.value)},DAMAGE_TYPES.map(d=>React.createElement('option',{key:d,value:d},d)))),
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Disposal Method'),React.createElement('select',{className:'fi',value:form.disposalMethod,onChange:e=>sf('disposalMethod',e.target.value)},DISPOSALS.map(d=>React.createElement('option',{key:d,value:d},d)))),
+        React.createElement('div',{className:'fg'},React.createElement('label',{className:'flbl'},'Remarks'),React.createElement('input',{className:'fi',value:form.remarks,onChange:e=>sf('remarks',e.target.value),placeholder:'Additional notes...'}))
+      )
+    ),
+    React.createElement('div',{className:'card'},
+      React.createElement('div',{style:{fontWeight:700,fontSize:13,color:'var(--red)',marginBottom:10}},'⚠ Damaged Items'),
+      React.createElement('div',{style:{overflowX:'auto'}},
+        React.createElement('table',{style:{width:'100%',borderCollapse:'collapse',minWidth:650}},
+          React.createElement('thead',null,React.createElement('tr',{style:{background:'var(--red-light)'}},
+            ['Item','UOM','In Stock','Damaged Qty','Notes',''].map(h=>React.createElement('th',{key:h,style:{padding:'8px 10px',fontSize:10,fontWeight:700,textTransform:'uppercase',color:'var(--red)',textAlign:'left',borderBottom:'2px solid var(--red-mid)'}},h))
+          )),
+          React.createElement('tbody',null,
+            form.items.map((row,idx)=>React.createElement('tr',{key:idx,style:{borderBottom:'1px solid var(--border)'}},
+              React.createElement('td',{style:{padding:'6px 6px 6px 0'}},
+                React.createElement('select',{className:'fi',style:{fontSize:12,padding:'6px 8px'},value:row.itemId,onChange:e=>setIR(idx,'itemId',e.target.value)},
+                  React.createElement('option',{value:''},'Select item...'),
+                  allItems.map(i=>React.createElement('option',{key:i.id,value:i.id},i.code+' — '+i.name+' ('+String(stockSvc.getQty(i.id,i.whId))+')'))
+                )
+              ),
+              React.createElement('td',{style:{padding:'6px'}},React.createElement('span',{style:{fontSize:12,color:'var(--txt2)'}},row.unit||'-')),
+              React.createElement('td',{style:{padding:'6px'}},React.createElement('span',{style:{fontWeight:700,fontSize:13,color:row.availQty>0?'var(--green)':'var(--red)'}},String(row.availQty))),
+              React.createElement('td',{style:{padding:'6px'}},React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px',width:90,border:Number(row.qty)>Number(row.availQty)?'2px solid var(--red)':''},type:'number',min:1,max:row.availQty,value:row.qty,onChange:e=>setIR(idx,'qty',e.target.value),placeholder:'0'})),
+              React.createElement('td',{style:{padding:'6px'}},React.createElement('input',{className:'fi',style:{fontSize:12,padding:'6px 8px',minWidth:120},value:row.remarks||'',onChange:e=>setIR(idx,'remarks',e.target.value),placeholder:'Damage notes...'})),
+              React.createElement('td',{style:{padding:'6px'}},React.createElement('button',{className:'btn btn-danger btn-icon',style:{width:28,height:28,minWidth:28,padding:0},onClick:()=>removeRow(idx),disabled:form.items.length===1},React.createElement(Ic,{n:'x',s:12})))
+            ))
+          )
+        )
+      ),
+      React.createElement('div',{style:{marginTop:12,paddingTop:10,borderTop:'1px solid var(--border)'}},
+        React.createElement('button',{className:'btn btn-outline btn-sm',onClick:addRow},React.createElement(Ic,{n:'plus',s:12}),' Add Item')
+      )
+    )
+  );
+
+  return React.createElement('div',null,
+    React.createElement('div',{className:'ph'},
+      React.createElement('div',{className:'ph-l'},React.createElement('h1',null,'Damaged Products'),React.createElement('p',null,String(dmgs.length)+' records')),
+      React.createElement('div',{className:'ph-r'},
+        _dmgSA&&React.createElement('select',{className:'fs',value:selWh,onChange:e=>{setSelWh(e.target.value);setDmgs(dmgSvc.getAll(e.target.value||null));}},whs.map(w=>React.createElement('option',{key:w.id,value:w.id},w.name))),
+        React.createElement('button',{className:'btn btn-danger',onClick:()=>{setForm(blankForm());setTab('form');}},React.createElement(Ic,{n:'alert',s:13}),' + Report Damage')
+      )
+    ),
+    React.createElement('div',{className:'sb'},
+      React.createElement('div',{className:'si'},React.createElement('div',{className:'si-ico'},React.createElement(Ic,{n:'search',s:13,c:'var(--txt3)'})),React.createElement('input',{placeholder:'Search DMG No. / Damage Type...',value:q,onChange:e=>setQ(e.target.value)}))
+    ),
+    React.createElement('div',{className:'tw'},
+      React.createElement('table',null,
+        React.createElement('thead',null,React.createElement('tr',null,['DMG No.','Date',_dmgSA&&'Warehouse','Damage Type','Disposal','Items','Total Loss','Status','Action'].filter(Boolean).map(h=>React.createElement('th',{key:h},h)))),
+        React.createElement('tbody',null,
+          filtered.length===0
+            ? React.createElement('tr',null,React.createElement('td',{colSpan:9},React.createElement('div',{className:'te'},'No damage reports yet.')))
+            : filtered.map(v=>React.createElement('tr',{key:v.id,style:{cursor:'pointer',background:'var(--red-light)'},onClick:()=>{setViewDmg(v);setTab('view');}},
+              React.createElement('td',null,React.createElement('span',{style:{color:'var(--red)',fontWeight:700,fontFamily:'var(--mono)',fontSize:11}},v.dmgNo)),
+              React.createElement('td',null,fmtDate(v.date)),
+              _dmgSA&&React.createElement('td',null,React.createElement(WhBadge,{whId:v.whId})),
+              React.createElement('td',null,React.createElement('span',{className:'badge b-red'},v.damageType||'-')),
+              React.createElement('td',null,v.disposalMethod||'-'),
+              React.createElement('td',null,String(v.totalItems||v.items?.length||0)+' items'),
+              React.createElement('td',null,React.createElement('strong',{style:{color:'var(--red)'}},sym+' '+fmt(v.totalValue||0,2))),
+              React.createElement('td',null,React.createElement(Badge,{c:v.status==='Approved'?'green':v.status==='Rejected'?'red':'amber'},v.status)),
+              React.createElement('td',{onClick:e=>e.stopPropagation()},React.createElement('div',{style:{display:'flex',gap:4}},
+                React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>{setViewDmg(v);setTab('view');}},React.createElement(Ic,{n:'eye',s:12})),
+                React.createElement('button',{className:'btn btn-outline btn-sm btn-icon',onClick:()=>printVoucher(v)},React.createElement(Ic,{n:'print',s:12}))
+              ))
+            ))
+        )
+      )
+    )
   );
 }
 
@@ -4383,6 +4935,8 @@ function App(){
     transfer:React.createElement(StockTransfer),
     consumption:React.createElement(Consumption),
     production:React.createElement(Production),
+    matreq:React.createElement(MaterialRequest),
+    damaged:React.createElement(DamagedProducts),
     approvals:React.createElement(Approvals),
     stockview:React.createElement(StockView),
     reports:React.createElement(Reports),
@@ -4402,6 +4956,8 @@ function App(){
     transfer:['Transaction','Stock Transfer'],
     consumption:['Transaction','Consumption'],
     production:['Transaction','Production'],
+    matreq:['Transaction','Material Request'],
+    damaged:['Transaction','Damaged Products'],
     approvals:['Transaction','Approvals'],
     stockview:['Inventory','Stock View'],
     reports:['Reports'],
